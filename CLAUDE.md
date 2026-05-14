@@ -288,7 +288,7 @@ Update this as you complete each stage:
 | Stage | Script | Status | Output |
 |---|---|---|---|
 | 1. Extract frames | extract_frames.py | ✅ DONE | data/frames/ (80 frames) |
-| 2. VGGT reconstruction | run_vggt.py | ⬜ TODO | data/vggt_out/ |
+| 2. VGGT reconstruction | run_vggt.py | ✅ DONE (dry run on MPS) | data/vggt_out/ |
 | 3. Gaussian Splatting | train_splat.py | ⬜ TODO | outputs/splat/scene.ply |
 | 4. Grounded SAM2 | run_semantic.py | ⬜ TODO | outputs/semantic/ |
 | 5. 3D semantic lifting | lift_semantics_3d.py | ⬜ TODO | outputs/objects_3d.json |
