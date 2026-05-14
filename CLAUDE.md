@@ -288,7 +288,7 @@ Update this as you complete each stage:
 | Stage | Script | Status | Output |
 |---|---|---|---|
 | 1. Extract frames | extract_frames.py | ✅ DONE | data/frames/ (80 frames) |
-| 2. VGGT reconstruction | run_vggt.py | ✅ DONE (dry run on MPS) | data/vggt_out/ |
+| 2. VGGT reconstruction | run_vggt.py | ✅ DONE (dry run MPS verified) | data/vggt_out/ |
 | 3. Gaussian Splatting | train_splat.py | ⬜ TODO | outputs/splat/scene.ply |
 | 4. Grounded SAM2 | run_semantic.py | ⬜ TODO | outputs/semantic/ |
 | 5. 3D semantic lifting | lift_semantics_3d.py | ⬜ TODO | outputs/objects_3d.json |
@@ -787,6 +787,16 @@ import torch  # must import AFTER setting env var
 
 **VGGT OOM on GPU (too many frames at once):**
 Use --batch_size 30. If still OOM, reduce to 15.
+On MPS (M4 Pro), max ~5 frames per batch at 518×518. Use --batch_size 5.
+
+**VGGT confidence threshold too high (0 points exported):**
+The script uses adaptive thresholding: if conf_threshold yields 0 points,
+it falls back to the 50th percentile. Default is now 1.5 (was 5.0).
+On MPS dry run, conf range was 1.0–2.14.
+
+**pycolmap version incompatibility (v3.13+ / v4.0):**
+We use a custom COLMAP binary writer (`scripts/colmap_utils.py`) instead
+of pycolmap. This avoids all version issues with the Frame/Rig API changes.
 
 **gsplat import error on UCL GPU:**
 ```bash
@@ -813,6 +823,7 @@ Use `open3d.visualization.draw_plotly()` instead of `draw()` — works headlessl
 
 | Decision | Choice | Reason |
 |---|---|---|
+| COLMAP export | Custom binary writer (not pycolmap) | pycolmap 3.13+/4.0 broke Image API; our writer is zero-dependency |
 | Pose estimation | VGGT (not COLMAP) | CVPR 2025 Best Paper, 1-second inference, no feature matching failures |
 | Gaussian Splatting | gsplat (not nerfstudio, not FlashGS) | CUDA-native, well-maintained, FlashGS requires NVIDIA CUDA only |
 | Semantic segmentation | Grounded SAM2 (not fixed-class) | Open vocabulary, aligns with Humanoid's VLM architecture |
@@ -833,7 +844,7 @@ Use `open3d.visualization.draw_plotly()` instead of `draw()` — works headlessl
 - gsplat docs: https://docs.gsplat.studio
 - Grounded SAM2: https://github.com/IDEA-Research/Grounded-SAM-2
 - HF Space: https://huggingface.co/spaces/JesonRamesh/roboscene-plus (update when live)
-- GitHub repo: https://github.com/JesonRamesh/roboscene-plus (update with actual URL)
+- GitHub repo: https://github.com/JesonRamesh/3D-Spatial-Reconstruction
 
 ---
 
@@ -849,3 +860,28 @@ Use `open3d.visualization.draw_plotly()` instead of `draw()` — works headlessl
 - [ ] Limitations section is honest
 - [ ] Git history shows incremental development (10 commits minimum)
 - [ ] Repo URL ready to paste into Humanoid application form
+
+---
+
+## Progress Notes
+
+### Session 1 (completed)
+- Built full project scaffold matching CLAUDE.md structure
+- `scripts/extract_frames.py`: ffmpeg-based extraction at 1fps → 80 frames
+- All config, requirements, .gitignore, README in place
+
+### Session 2 (completed — dry run on MPS)
+- `scripts/run_vggt.py`: Full VGGT pipeline with CUDA→MPS→CPU fallback
+- `scripts/colmap_utils.py`: Custom COLMAP binary writer (avoids pycolmap API breakage)
+- `ucl_gpu/run_vggt_job.sh`: GPU job script for UCL machines
+- Verified on M4 Pro MPS: 5 frames processed in 28s, 95K 3D points exported
+- Outputs: cameras.bin, images.bin, points3D.bin, depth maps, camera_poses.json, points.ply
+- Key finding: MPS max batch ~5 frames (6GB model + images = OOM at 10)
+- Key finding: Depth confidence range is 1.0–2.14 on MPS, so threshold lowered to 1.5
+
+### Next Steps
+- **Run full VGGT inference** on UCL GPU (all 80 frames, ~4 min on RTX 4090)
+  - Command: `python scripts/run_vggt.py` (no --dry_run)
+  - Upload frames first: `scp -r data/frames/ user@machine:/scratch0/user/frames/`
+  - Download outputs: `scp -r user@machine:/scratch0/user/vggt_out/ ./data/`
+- **Session 3**: Write `scripts/train_splat.py` for Gaussian Splatting with gsplat
