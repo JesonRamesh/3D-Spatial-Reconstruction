@@ -1,0 +1,63 @@
+# RoboScene+ Configuration
+# ========================
+
+project:
+  name: "RoboScene+"
+  version: "0.1.0"
+
+# Paths (relative to project root)
+paths:
+  video: "room.MOV"
+  frames_dir: "data/frames"
+  raw_dir: "data/raw"
+  vggt_out: "data/vggt_out"
+  depths_dir: "data/vggt_out/depths"
+  sparse_dir: "data/vggt_out/sparse"
+  camera_poses: "data/vggt_out/camera_poses.json"
+  splat_dir: "outputs/splat"
+  semantic_dir: "outputs/semantic"
+  dead_zones_dir: "outputs/dead_zones"
+  scene_graph: "outputs/scene_graph.json"
+  objects_3d: "outputs/objects_3d.json"
+  confidence_map: "outputs/confidence_map.npy"
+  navigability_map: "outputs/navigability_map.png"
+
+# Session 1: Frame Extraction
+extraction:
+  fps: 1.0                     # extract at 1 frame per second
+  output_format: "jpg"
+  quality: 95                  # JPEG quality (1-100)
+  name_pattern: "frame_{:04d}.jpg"
+
+# Session 2: VGGT Reconstruction
+vggt:
+  model: "facebook/VGGT-1B"
+  batch_size: 30
+  device: "auto"               # auto | cuda | mps | cpu
+
+# Session 3: Gaussian Splatting
+splatting:
+  iterations: 15000
+  data_factor: 1
+
+# Session 4: Semantic Segmentation
+semantic:
+  labels: "chair,desk,laptop,monitor,lamp,bookshelf,door,window,plant,bed,sofa,table,shelf,keyboard,mouse,cup,bottle,book,phone,bag"
+  box_threshold: 0.3
+  text_threshold: 0.25
+  sam2_model: "sam2.1_hiera_large"
+
+# Session 6: Confidence Map
+confidence:
+  voxel_size: 0.05             # metres
+  camera_range: 3.0            # metres
+  density_weight: 0.6
+  coverage_weight: 0.4
+  high_threshold: 0.7
+  low_threshold: 0.3
+
+# Session 9: Gradio App
+app:
+  host: "0.0.0.0"
+  port: 7860
+  splat_url: ""                # set to HF dataset URL when deployed

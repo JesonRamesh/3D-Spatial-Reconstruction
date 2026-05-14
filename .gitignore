@@ -1,0 +1,74 @@
+# RoboScene+ .gitignore
+
+# Video files (too large for git)
+*.MOV
+*.mov
+*.mp4
+*.avi
+*.mkv
+
+# Extracted frames (regenerable)
+data/frames/*.jpg
+data/frames/*.png
+
+# VGGT outputs
+data/vggt_out/
+
+# Depth maps
+data/depth/
+
+# Model weights
+models/
+*.pth
+*.pt
+*.onnx
+*.bin
+*.safetensors
+
+# Gaussian Splat files (large)
+outputs/splat/*.ply
+outputs/splat/*.splat
+
+# Generated outputs (regenerable)
+outputs/semantic/
+outputs/dead_zones/
+outputs/confidence_map.npy
+outputs/navigability_map.png
+
+# Keep metadata files
+!data/frames/extraction_metadata.json
+!data/frames/frames_summary.csv
+!outputs/scene_graph.json
+!outputs/objects_3d.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/*.log
+
+# Jupyter
+.ipynb_checkpoints/

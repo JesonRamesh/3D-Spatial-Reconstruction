@@ -1,0 +1,40 @@
+# RoboScene+ Dependencies
+# =======================
+# Install: pip install -r requirements.txt
+
+# Session 1: Frame Extraction
+ffmpeg-python>=0.2.0
+Pillow>=10.0.0
+numpy>=1.24.0
+PyYAML>=6.0
+opencv-python>=4.8.0
+
+# Session 2: VGGT Reconstruction
+# torch>=2.0.0
+# torchvision>=0.15.0
+# huggingface-hub>=0.19.0
+
+# Session 3: Gaussian Splatting
+# gsplat==1.3.0
+
+# Session 4: Semantic Segmentation
+# groundingdino-py
+# segment-anything-2
+# pycocotools
+
+# Session 5: 3D Semantic Lifting
+# open3d>=0.17.0
+# scipy>=1.11.0
+
+# Session 6: Confidence Map
+# matplotlib>=3.8.0
+
+# Session 7: Dead Zone Completion
+# simple-lama-inpainting
+
+# Session 8: Scene Graph + Query
+# anthropic>=0.39.0
+# networkx>=3.0
+
+# Session 9: Gradio App
+# gradio>=4.0.0
