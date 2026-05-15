@@ -266,8 +266,8 @@ def run_gsplat_training(
         "--result_dir", str(output_dir),
         "--max_steps", str(iterations),
         "--data_factor", "1",
-        "--disable_viewer",
-        "--save_ply",
+        "",
+        "",
     ]
 
     logger.info("=" * 62)
