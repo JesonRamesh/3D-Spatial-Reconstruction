@@ -307,26 +307,41 @@ def write_colmap_reconstruction(
     num_frames, height, width, _ = world_points.shape
 
     # ── Cameras ────────────────────────────────────────────────────────
+    #
+    # CRITICAL FIX: Do NOT re-scale intrinsics here.
+    # =====================================================
+    # The caller (run_vggt.py) already called scale_intrinsics() which
+    # uniformly scaled VGGT-internal K from 518px resolution to the
+    # original image resolution (e.g. 4032x3024).
+    # The intrinsics[i] passed in are therefore ALREADY at the correct
+    # original-image scale.  We must write them as-is.
+    #
+    # The old code applied resize_ratio = max(W,H)/518 AGAIN here,
+    # producing fx values ~7.78x too large (e.g. 16453 instead of 2114),
+    # which gave HFOV=14 deg instead of ~87 deg.  This was the primary
+    # cause of wrong 3D point positions and training divergence.
     cameras = []
     for i in range(N):
-        K = intrinsics[i]
+        K = intrinsics[i]   # already scaled to original resolution by scale_intrinsics()
         if original_coords is not None:
             real_size = original_coords[i, -2:]  # [width, height]
-            resize_ratio = max(real_size) / vggt_resolution
-            fx = K[0, 0] * resize_ratio
-            fy = K[1, 1] * resize_ratio
-            cx = real_size[0] / 2
-            cy = real_size[1] / 2
             w, h = int(real_size[0]), int(real_size[1])
         else:
-            fx, fy = K[0, 0], K[1, 1]
-            cx, cy = K[0, 2], K[1, 2]
-            w, h = vggt_resolution, vggt_resolution
+            # Fall back to inferring size from principal point
+            w = int(round(K[0, 2] * 2))
+            h = int(round(K[1, 2] * 2))
+
+        # fx == fy is enforced by scale_intrinsics() (uniform scale).
+        # cx, cy are set to image centre by scale_intrinsics().
+        fx = float(K[0, 0])
+        fy = float(K[1, 1])
+        cx = float(K[0, 2])
+        cy = float(K[1, 2])
 
         if camera_model == "PINHOLE":
             params = np.array([fx, fy, cx, cy])
         elif camera_model == "SIMPLE_PINHOLE":
-            params = np.array([(fx + fy) / 2, cx, cy])
+            params = np.array([fx, cx, cy])   # single f
         else:
             params = np.array([fx, fy, cx, cy])
 

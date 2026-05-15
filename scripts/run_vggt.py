@@ -166,11 +166,23 @@ def scale_intrinsics(
 ) -> np.ndarray:
     """
     Scale camera intrinsics from VGGT's internal resolution back to the
-    original frame dimensions.
+    original frame dimensions using UNIFORM scaling.
 
-    VGGT predicts K assuming a square (resolution×resolution) input.
-    We need K scaled to the original image size for correct unprojection
-    and COLMAP export.
+    CRITICAL FIX (was: non-uniform scaling):
+    =========================================
+    The original code used scale_x = W/res and scale_y = H/res, which
+    produces fx != fy for non-square images (e.g. 4032x3024 -> 518x518
+    gives scale_x=7.784, scale_y=5.838 -> fx/fy=1.333).
+
+    Physical cameras have square pixels, so fx MUST equal fy.
+    VGGT operates on a square-padded image and estimates a single
+    symmetric focal length. We must scale it uniformly using the
+    LARGER dimension (max(W, H) / resolution) so the focal correctly
+    represents the longer axis of the original sensor.
+
+    The principal point (cx, cy) is set to the image centre (W/2, H/2)
+    regardless of VGGT's estimate, because cx/cy are unreliable from
+    a monocular neural estimator.
 
     Args:
         intrinsic:   [S, 3, 3] at VGGT resolution (resolution×resolution)
@@ -178,14 +190,22 @@ def scale_intrinsics(
         resolution:  VGGT input resolution (e.g. 518)
 
     Returns:
-        intrinsic_scaled: [S, 3, 3] scaled to original image dimensions
+        intrinsic_scaled: [S, 3, 3] with fx=fy scaled to original image dims
     """
     intrinsic_scaled = intrinsic.copy()
     for i, (w, h) in enumerate(original_wh):
-        scale_x = w / resolution
-        scale_y = h / resolution
-        intrinsic_scaled[i, 0] *= scale_x  # fx, cx
-        intrinsic_scaled[i, 1] *= scale_y  # fy, cy
+        # UNIFORM scale: use the max dimension so focal correctly represents
+        # the longer sensor axis. This preserves fx == fy (square pixels).
+        scale = max(w, h) / resolution
+        fx_uniform = intrinsic[i, 0, 0] * scale   # was VGGT-internal fx
+        fy_uniform = fx_uniform                     # enforce square pixels
+        cx_correct = w / 2.0                        # principal pt at centre
+        cy_correct = h / 2.0
+
+        intrinsic_scaled[i, 0, 0] = fx_uniform
+        intrinsic_scaled[i, 1, 1] = fy_uniform
+        intrinsic_scaled[i, 0, 2] = cx_correct
+        intrinsic_scaled[i, 1, 2] = cy_correct
     return intrinsic_scaled
 
 
@@ -401,6 +421,111 @@ def save_camera_poses(
     logger.info(f"  Camera poses saved: {json_path}")
 
 
+# ── Pose stitching across batch boundaries ────────────────────────────
+
+def _stitch_batch_poses(
+    extrinsic_new: np.ndarray,
+    extrinsic_prev: list,
+    n_overlap: int,
+    logger: logging.Logger,
+) -> np.ndarray:
+    """
+    Align a new batch of extrinsics into the global coordinate frame
+    using shared overlap frames between consecutive batches.
+
+    Problem solved:
+    ---------------
+    VGGT estimates poses relative to the first frame of each batch
+    independently. Without stitching, batch k+1 is in a completely
+    different coordinate frame from batch k, causing 180-degree flips
+    and disconnected local maps in the reconstruction.
+
+    Method (Umeyama / SVD Procrustes):
+    -----------------------------------
+    The first n_overlap frames of extrinsic_new are the same physical
+    frames as the last n_overlap frames already stored in extrinsic_prev.
+    We compute the similarity transform T_align (scale + rotation +
+    translation) that maps new-batch camera positions onto the previously
+    registered positions, then apply T_align to all frames in the batch.
+
+    Args:
+        extrinsic_new  : [B, 3, 4] cam-from-world for the new batch
+        extrinsic_prev : list of already-registered [Bi, 3, 4] arrays
+        n_overlap      : overlap frames at start of new batch
+        logger         : for progress messages
+
+    Returns:
+        [B, 3, 4] extrinsics with new batch aligned to global frame
+    """
+    prev_all     = np.concatenate(extrinsic_prev, axis=0)  # [N_prev, 3, 4]
+    prev_overlap = prev_all[-n_overlap:]                   # [n_ov, 3, 4]
+    new_overlap  = extrinsic_new[:n_overlap]               # [n_ov, 3, 4]
+
+    def to_4x4(ext34: np.ndarray) -> np.ndarray:
+        """[B, 3, 4] -> [B, 4, 4]"""
+        B   = ext34.shape[0]
+        out = np.tile(np.eye(4), (B, 1, 1))
+        out[:, :3, :] = ext34
+        return out
+
+    def cam_positions(ext44: np.ndarray) -> np.ndarray:
+        """[B, 4, 4] cam-from-world -> [B, 3] world positions = -R^T @ t"""
+        R = ext44[:, :3, :3]
+        t = ext44[:, :3,  3]
+        return np.einsum('bij,bj->bi', R.transpose(0, 2, 1), -t)
+
+    P = to_4x4(prev_overlap)    # [n_ov, 4, 4] registered
+    N = to_4x4(new_overlap)     # [n_ov, 4, 4] new (unregistered)
+
+    pos_prev = cam_positions(P)  # [n_ov, 3]
+    pos_new  = cam_positions(N)  # [n_ov, 3]
+
+    # SVD-based Procrustes (Umeyama) to find scale, R_align, t_align such that
+    # pos_prev ≈ scale * R_align @ pos_new + t_align
+    mu_prev = pos_prev.mean(axis=0)
+    mu_new  = pos_new.mean(axis=0)
+    prev_c  = pos_prev - mu_prev
+    new_c   = pos_new  - mu_new
+
+    var_new = float((new_c ** 2).sum()) / n_overlap
+    if var_new < 1e-12:
+        logger.warning("  Overlap frames zero-variance — skipping stitching for this batch")
+        return extrinsic_new
+
+    H             = new_c.T @ prev_c              # [3, 3]
+    U, S, Vt      = np.linalg.svd(H)
+    d             = np.linalg.det(Vt.T @ U.T)
+    D             = np.diag([1., 1., float(np.sign(d))])
+    R_align       = Vt.T @ D @ U.T               # [3, 3] rotation
+    scale         = float(S.sum()) / var_new / n_overlap
+    t_align       = mu_prev - scale * (R_align @ mu_new)   # [3]
+
+    # Log alignment quality
+    aligned_check = scale * (R_align @ pos_new.T).T + t_align
+    err           = float(np.linalg.norm(aligned_check - pos_prev, axis=1).mean())
+    logger.info(f"  Batch stitch: scale={scale:.4f}  mean_pos_err={err:.5f}  "
+                f"over {n_overlap} overlap frames")
+    if err > 0.5:
+        logger.warning(f"  ⚠️  Large stitch error ({err:.3f}) — "
+                       f"overlap frames may not share the same physical views")
+
+    # Build the 4x4 alignment transform T and its inverse.
+    # T maps old-world -> new-world: p_new = scale * R_align @ p_old + t_align
+    T_align          = np.eye(4)
+    T_align[:3, :3]  = scale * R_align
+    T_align[:3,  3]  = t_align
+
+    T_inv            = np.eye(4)
+    T_inv[:3, :3]    = (1.0 / scale) * R_align.T
+    T_inv[:3,  3]    = -(1.0 / scale) * (R_align.T @ t_align)
+
+    # Apply: E_aligned = E_new @ T_inv
+    # (cam-from-world_aligned = cam-from-world_new @ world_old-from-world_aligned)
+    new_all = to_4x4(extrinsic_new)      # [B, 4, 4]
+    aligned = new_all @ T_inv[None]      # [B, 4, 4]  (T_inv broadcast)
+    return aligned[:, :3, :]             # [B, 3, 4]
+
+
 # ── Config loading ─────────────────────────────────────────────────────
 
 def load_config(config_path: Path) -> dict:
@@ -435,6 +560,12 @@ def main():
                         help="Resize frames to this square resolution before VGGT "
                              "inference (default: 518, VGGT's training resolution). "
                              "Lower values reduce VRAM at some quality cost.")
+    parser.add_argument("--overlap", type=int, default=5,
+                        help="Number of frames to overlap between consecutive batches "
+                             "for pose stitching (default: 5). Set to 0 to disable. "
+                             "Overlap frames are used to compute a rigid alignment "
+                             "between adjacent batches, eliminating 180-degree flips "
+                             "at batch boundaries.")
     parser.add_argument("--dry_run", action="store_true",
                         help="Process only the first 10 frames (diagnostic mode)")
     parser.add_argument("--config", type=str, default="config.yaml",
@@ -502,9 +633,12 @@ def main():
     # ── Load and preprocess images ─────────────────────────────────────
     vggt_resolution = args.resolution
     img_load_resolution = vggt_resolution  # we load directly at target resolution
+    overlap = args.overlap
 
     logger.info(f"Input resolution: {vggt_resolution}×{vggt_resolution} "
                 f"(VGGT training res=518, current={'✅ native' if vggt_resolution == 518 else '⚠️ rescaled'})")
+    logger.info(f"Batch overlap: {overlap} frames "
+                f"({'enabled — will stitch poses across boundaries' if overlap > 0 else 'disabled'})")
     t_load = time.time()
 
     # Process in batches to avoid OOM during loading too
@@ -516,15 +650,29 @@ def main():
     all_images = []
     all_original_coords = []
 
-    num_batches = (total_frames + batch_size - 1) // batch_size
+    # Build batch slice list with optional overlap.
+    # Each entry is (start_frame_idx, end_frame_idx, n_overlap_frames_at_start).
+    # Overlap frames at the START of a batch are shared with the previous batch
+    # so we can compute a rigid alignment to stitch poses globally.
+    stride = max(batch_size - overlap, 1) if overlap > 0 else batch_size
+    batch_slices = []
+    pos = 0
+    while pos < total_frames:
+        end_pos = min(pos + batch_size, total_frames)
+        n_ov = overlap if pos > 0 else 0  # first batch has no overlap frames
+        batch_slices.append((pos, end_pos, n_ov))
+        pos += stride
+        if end_pos == total_frames:
+            break
+    num_batches = len(batch_slices)
+    logger.info(f"Batch plan: {num_batches} batches, stride={stride}, overlap={overlap}")
 
-    for batch_idx in range(num_batches):
-        start = batch_idx * batch_size
-        end = min(start + batch_size, total_frames)
+    for batch_idx, (start, end, n_ov) in enumerate(batch_slices):
         batch_paths = image_paths[start:end]
 
         logger.info(f"Batch {batch_idx + 1}/{num_batches}: "
-                     f"frames {start + 1}–{end} ({len(batch_paths)} frames)")
+                     f"frames {start + 1}–{end} ({len(batch_paths)} frames, "
+                     f"{n_ov} overlap at start)")
 
         # Load and resize images using PIL LANCZOS
         t_batch = time.time()
@@ -555,14 +703,33 @@ def main():
         # Scale intrinsics from vggt_resolution back to original frame dimensions
         intrinsic = scale_intrinsics(intrinsic, original_wh_batch, vggt_resolution)
 
-        # Store results
-        all_extrinsics.append(extrinsic)
-        all_intrinsics.append(intrinsic)
-        all_depth_maps.append(depth_map)
-        all_depth_confs.append(depth_conf)
-        all_world_points.append(world_points)
-        all_images.append(images.cpu())
-        all_original_coords.append(original_coords_batch)
+        # ── Stitch poses using overlap frames ─────────────────────────
+        # VGGT estimates poses relative to the first frame of each batch.
+        # Consecutive batches are therefore in different coordinate frames.
+        # With overlap > 0, the first n_ov frames of this batch are the
+        # same physical frames as the last n_ov frames of the previous batch.
+        # We compute the rigid transform (SE3) that maps the current batch's
+        # frame 0..n_ov-1 poses onto the corresponding already-registered
+        # poses from the previous batch, then apply it to all frames in
+        # this batch. This globally aligns all batches in one coordinate frame.
+        if overlap > 0 and n_ov > 0 and len(all_extrinsics) > 0:
+            extrinsic = _stitch_batch_poses(
+                extrinsic_new=extrinsic,
+                extrinsic_prev=all_extrinsics,
+                n_overlap=n_ov,
+                logger=logger,
+            )
+
+        # Store results (for overlapping batches, drop the overlap frames at the
+        # start since they were already stored in the previous batch)
+        drop = n_ov  # frames already stored from previous batch
+        all_extrinsics.append(extrinsic[drop:])
+        all_intrinsics.append(intrinsic[drop:])
+        all_depth_maps.append(depth_map[drop:])
+        all_depth_confs.append(depth_conf[drop:])
+        all_world_points.append(world_points[drop:])
+        all_images.append(images[drop:].cpu())
+        all_original_coords.append(original_coords_batch[drop:])
 
         # Clear GPU memory between batches
         del images
