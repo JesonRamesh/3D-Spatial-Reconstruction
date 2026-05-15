@@ -101,7 +101,7 @@ echo "gsplat version: $(python -c 'import gsplat; print(gsplat.__version__)' 2>/
 # Install extra deps needed by gsplat's example simple_trainer.py
 echo "Checking simple_trainer dependencies..."
 pip install -q tyro viser "nerfview==0.0.2" "torchmetrics[image]" tensorboard \
-    imageio "numpy<2.0.0" scikit-learn tqdm opencv-python Pillow pyyaml 2>/dev/null
+    imageio "numpy<2.0.0" scikit-learn tqdm opencv-python Pillow pyyaml scipy 2>/dev/null
 echo ""
 
 # ── Run Gaussian Splatting training ────────────────────────────────────

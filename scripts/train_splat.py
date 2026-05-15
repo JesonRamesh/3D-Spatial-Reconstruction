@@ -50,7 +50,17 @@ GSPLAT_TAG = "v1.3.0"
 GSPLAT_RAW_BASE = f"https://raw.githubusercontent.com/nerfstudio-project/gsplat/{GSPLAT_TAG}/examples"
 
 # Files needed from gsplat examples to run simple_trainer.py
-GSPLAT_FILES = [
+# NOTE: datasets/colmap.py is NOT downloaded -- we use our own patched version
+# that replaces pycolmap.SceneManager with our custom binary readers.
+GSPLAT_FILES_DOWNLOAD = [
+    "simple_trainer.py",
+    "utils.py",
+    "datasets/normalize.py",
+    "datasets/traj.py",
+]
+
+# All files that should be present (including our patched colmap.py)
+GSPLAT_FILES_ALL = [
     "simple_trainer.py",
     "utils.py",
     "datasets/colmap.py",
@@ -119,15 +129,15 @@ def ensure_gsplat_trainer(project_root: Path, logger: logging.Logger) -> Path:
     examples_dir = project_root / "scripts" / "gsplat_examples"
     trainer_path = examples_dir / "simple_trainer.py"
 
-    # Check if already downloaded
-    all_present = all((examples_dir / f).exists() for f in GSPLAT_FILES)
+    # Check if already set up
+    all_present = all((examples_dir / f).exists() for f in GSPLAT_FILES_ALL)
     if all_present:
         logger.info(f"gsplat examples already cached at {examples_dir}")
         return trainer_path
 
     logger.info(f"Downloading gsplat examples ({GSPLAT_TAG}) to {examples_dir}...")
 
-    for rel_path in GSPLAT_FILES:
+    for rel_path in GSPLAT_FILES_DOWNLOAD:
         url = f"{GSPLAT_RAW_BASE}/{rel_path}"
         dest = examples_dir / rel_path
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -139,12 +149,19 @@ def ensure_gsplat_trainer(project_root: Path, logger: logging.Logger) -> Path:
             logger.error(f"  Failed to download {url}: {e}")
             raise
 
+    # Copy our patched datasets/colmap.py (replaces pycolmap with our readers)
+    patched_colmap = project_root / "scripts" / "gsplat_colmap_dataset.py"
+    dest_colmap = examples_dir / "datasets" / "colmap.py"
+    dest_colmap.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(patched_colmap, dest_colmap)
+    logger.info(f"  Installed patched datasets/colmap.py (no pycolmap dependency)")
+
     # Create __init__.py for datasets package
     datasets_init = examples_dir / "datasets" / "__init__.py"
     if not datasets_init.exists():
         datasets_init.write_text("")
 
-    logger.info(f"  All {len(GSPLAT_FILES)} files downloaded successfully")
+    logger.info(f"  All files set up successfully ({len(GSPLAT_FILES_ALL)} total)")
     return trainer_path
 
 

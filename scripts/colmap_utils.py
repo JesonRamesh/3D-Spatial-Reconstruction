@@ -51,6 +51,145 @@ def rotmat_to_qvec(R: np.ndarray) -> np.ndarray:
     return np.array([qvec[3], qvec[0], qvec[1], qvec[2]])  # [w, x, y, z]
 
 
+# ── Binary Readers ─────────────────────────────────────────────────────
+# Mirrors the writers below but reads COLMAP binary format back into
+# Python dicts. Used by our patched gsplat dataset loader to avoid
+# the broken pycolmap.SceneManager dependency.
+
+def read_cameras_binary(path: Path) -> dict:
+    """
+    Read cameras.bin.
+
+    Returns:
+        dict of camera_id -> {
+            'camera_id': int, 'model_id': int, 'model': str,
+            'width': int, 'height': int, 'params': np.array
+        }
+    """
+    MODEL_ID_TO_NAME = {v: k for k, v in CAMERA_MODEL_IDS.items()}
+    cameras = {}
+    with open(path, "rb") as f:
+        num_cameras = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(num_cameras):
+            camera_id = struct.unpack("<I", f.read(4))[0]
+            model_id = struct.unpack("<i", f.read(4))[0]
+            width = struct.unpack("<Q", f.read(8))[0]
+            height = struct.unpack("<Q", f.read(8))[0]
+            model_name = MODEL_ID_TO_NAME.get(model_id, "PINHOLE")
+            num_params = CAMERA_MODEL_NUM_PARAMS.get(model_name, 4)
+            params = np.array(
+                struct.unpack(f"<{num_params}d", f.read(8 * num_params))
+            )
+            cameras[camera_id] = {
+                "camera_id": camera_id,
+                "model_id": model_id,
+                "model": model_name,
+                "width": width,
+                "height": height,
+                "params": params,
+            }
+    return cameras
+
+
+def read_images_binary(path: Path) -> dict:
+    """
+    Read images.bin.
+
+    Returns:
+        dict of image_id -> {
+            'image_id': int, 'qvec': np.array[4] (w,x,y,z),
+            'tvec': np.array[3], 'camera_id': int, 'name': str,
+            'point2D_xys': np.array[N,2], 'point3D_ids': np.array[N]
+        }
+    """
+    images = {}
+    with open(path, "rb") as f:
+        num_images = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(num_images):
+            image_id = struct.unpack("<I", f.read(4))[0]
+            qvec = np.array(struct.unpack("<4d", f.read(32)))  # w,x,y,z
+            tvec = np.array(struct.unpack("<3d", f.read(24)))
+            camera_id = struct.unpack("<I", f.read(4))[0]
+            # Read null-terminated name
+            name_chars = []
+            while True:
+                c = f.read(1)
+                if c == b"\x00" or c == b"":
+                    break
+                name_chars.append(c.decode("utf-8"))
+            name = "".join(name_chars)
+            # Read 2D points
+            num_points2D = struct.unpack("<Q", f.read(8))[0]
+            xys = np.zeros((num_points2D, 2), dtype=np.float64)
+            point3D_ids = np.full(num_points2D, -1, dtype=np.int64)
+            for j in range(num_points2D):
+                xys[j, 0] = struct.unpack("<d", f.read(8))[0]
+                xys[j, 1] = struct.unpack("<d", f.read(8))[0]
+                point3D_ids[j] = struct.unpack("<q", f.read(8))[0]
+            images[image_id] = {
+                "image_id": image_id,
+                "qvec": qvec,
+                "tvec": tvec,
+                "camera_id": camera_id,
+                "name": name,
+                "point2D_xys": xys,
+                "point3D_ids": point3D_ids,
+            }
+    return images
+
+
+def read_points3d_binary(path: Path) -> dict:
+    """
+    Read points3D.bin.
+
+    Returns:
+        dict of point3D_id -> {
+            'point3D_id': int, 'xyz': np.array[3], 'rgb': np.array[3],
+            'error': float, 'track': list of (image_id, point2D_idx)
+        }
+    """
+    points = {}
+    with open(path, "rb") as f:
+        num_points = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(num_points):
+            point3D_id = struct.unpack("<Q", f.read(8))[0]
+            xyz = np.array(struct.unpack("<3d", f.read(24)))
+            rgb = np.array(struct.unpack("<3B", f.read(3)), dtype=np.uint8)
+            error = struct.unpack("<d", f.read(8))[0]
+            track_len = struct.unpack("<Q", f.read(8))[0]
+            track = []
+            for _ in range(track_len):
+                img_id = struct.unpack("<I", f.read(4))[0]
+                pt2d_idx = struct.unpack("<I", f.read(4))[0]
+                track.append((img_id, pt2d_idx))
+            points[point3D_id] = {
+                "point3D_id": point3D_id,
+                "xyz": xyz,
+                "rgb": rgb,
+                "error": error,
+                "track": track,
+            }
+    return points
+
+
+def qvec_to_rotmat(qvec: np.ndarray) -> np.ndarray:
+    """Convert COLMAP quaternion (w, x, y, z) to 3x3 rotation matrix.
+
+    Uses the same convention as COLMAP:
+    https://github.com/colmap/colmap/blob/main/src/colmap/util/types.h
+    """
+    w, x, y, z = qvec
+    R = np.array([
+        [1 - 2*y*y - 2*z*z,     2*x*y - 2*w*z,     2*x*z + 2*w*y],
+        [    2*x*y + 2*w*z, 1 - 2*x*x - 2*z*z,     2*y*z - 2*w*x],
+        [    2*x*z - 2*w*y,     2*y*z + 2*w*x, 1 - 2*x*x - 2*y*y],
+    ]).T
+    return R
+
+
+# ── Binary Writers ─────────────────────────────────────────────────────
+
+
 def write_cameras_binary(cameras: list, path: Path):
     """
     Write cameras.bin.
