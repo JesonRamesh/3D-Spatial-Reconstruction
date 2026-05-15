@@ -41,6 +41,9 @@ outputs/navigability_map.png
 !outputs/scene_graph.json
 !outputs/objects_3d.json
 
+# Downloaded gsplat trainer examples (fetched at runtime)
+scripts/gsplat_examples/
+
 # Python
 __pycache__/
 *.pyc

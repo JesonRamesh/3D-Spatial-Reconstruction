@@ -4,13 +4,23 @@ RoboScene+ Session 3: Gaussian Splatting Training
 ===================================================
 
 Trains a 3D Gaussian Splat from VGGT's COLMAP-format output using
-gsplat's simple_trainer.
+gsplat's official simple_trainer.py example script.
+
+Approach:
+  The `python -m gsplat.scripts.simple_trainer` entrypoint does NOT exist
+  in gsplat >= 1.4. Instead we download the official example trainer from
+  the gsplat GitHub repo (pinned to v1.3.0 tag for reproducibility) and
+  run it as a standalone script via subprocess using sys.executable.
+
+  The examples/ directory is cloned once to scripts/gsplat_examples/ and
+  reused on subsequent runs.
 
 Workflow:
   1. Log nvidia-smi GPU info at start
-  2. Launch gsplat simple_trainer as a subprocess
-  3. After training: locate output .ply, copy to outputs/splat/scene.ply
-  4. Parse training log for final PSNR
+  2. Download gsplat example trainer (if not cached)
+  3. Launch simple_trainer.py via subprocess (sys.executable)
+  4. After training: locate output .ply, copy to outputs/splat/scene.ply
+  5. Parse training log for final PSNR
 
 Usage:
     python scripts/train_splat.py
@@ -21,6 +31,7 @@ Usage:
 
 import argparse
 import glob
+import json
 import logging
 import os
 import re
@@ -28,7 +39,24 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
+
+
+# ── Constants ──────────────────────────────────────────────────────────
+
+# Pinned to v1.3.0 for reproducibility (simpler deps than main branch)
+GSPLAT_TAG = "v1.3.0"
+GSPLAT_RAW_BASE = f"https://raw.githubusercontent.com/nerfstudio-project/gsplat/{GSPLAT_TAG}/examples"
+
+# Files needed from gsplat examples to run simple_trainer.py
+GSPLAT_FILES = [
+    "simple_trainer.py",
+    "utils.py",
+    "datasets/colmap.py",
+    "datasets/normalize.py",
+    "datasets/traj.py",
+]
 
 
 # ── Logging ────────────────────────────────────────────────────────────
@@ -43,14 +71,14 @@ def setup_logging(log_dir: Path) -> logging.Logger:
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(logging.Formatter(
-        "%(asctime)s │ %(levelname)-7s │ %(message)s", datefmt="%H:%M:%S"
+        "%(asctime)s | %(levelname)-7s | %(message)s", datefmt="%H:%M:%S"
     ))
     logger.addHandler(ch)
 
     # File handler
     fh = logging.FileHandler(log_dir / "splat_train.log", mode="w")
     fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter("%(asctime)s │ %(levelname)-7s │ %(message)s"))
+    fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s"))
     logger.addHandler(fh)
 
     return logger
@@ -68,15 +96,56 @@ def log_gpu_info(logger: logging.Logger) -> None:
         )
         if result.returncode == 0:
             for line in result.stdout.strip().split("\n"):
-                logger.info(f"  GPU │ {line}")
+                logger.info(f"  GPU | {line}")
         else:
             logger.warning(f"  nvidia-smi returned code {result.returncode}")
             if result.stderr:
                 logger.warning(f"  stderr: {result.stderr.strip()}")
     except FileNotFoundError:
-        logger.warning("  nvidia-smi not found — no NVIDIA GPU detected")
+        logger.warning("  nvidia-smi not found -- no NVIDIA GPU detected")
     except subprocess.TimeoutExpired:
         logger.warning("  nvidia-smi timed out")
+
+
+# ── Download gsplat examples ───────────────────────────────────────────
+
+def ensure_gsplat_trainer(project_root: Path, logger: logging.Logger) -> Path:
+    """
+    Download gsplat's official simple_trainer.py and supporting files
+    from the pinned tag. Cached in scripts/gsplat_examples/.
+
+    Returns the path to simple_trainer.py.
+    """
+    examples_dir = project_root / "scripts" / "gsplat_examples"
+    trainer_path = examples_dir / "simple_trainer.py"
+
+    # Check if already downloaded
+    all_present = all((examples_dir / f).exists() for f in GSPLAT_FILES)
+    if all_present:
+        logger.info(f"gsplat examples already cached at {examples_dir}")
+        return trainer_path
+
+    logger.info(f"Downloading gsplat examples ({GSPLAT_TAG}) to {examples_dir}...")
+
+    for rel_path in GSPLAT_FILES:
+        url = f"{GSPLAT_RAW_BASE}/{rel_path}"
+        dest = examples_dir / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"  Downloading {rel_path}...")
+        try:
+            urllib.request.urlretrieve(url, str(dest))
+        except Exception as e:
+            logger.error(f"  Failed to download {url}: {e}")
+            raise
+
+    # Create __init__.py for datasets package
+    datasets_init = examples_dir / "datasets" / "__init__.py"
+    if not datasets_init.exists():
+        datasets_init.write_text("")
+
+    logger.info(f"  All {len(GSPLAT_FILES)} files downloaded successfully")
+    return trainer_path
 
 
 # ── Validate COLMAP directory ──────────────────────────────────────────
@@ -99,8 +168,6 @@ def validate_colmap_dir(colmap_dir: Path, logger: logging.Logger) -> bool:
     # Check for images directory (gsplat needs the frames)
     images_dir = colmap_dir / "images"
     if not images_dir.exists():
-        # gsplat simple_trainer expects images/ alongside sparse/
-        # VGGT outputs frames to data/frames/, so we may need to symlink
         logger.warning(f"No images/ directory at {images_dir}")
         logger.info("Will attempt to create symlink from frames directory...")
         return True
@@ -136,11 +203,14 @@ def ensure_images_dir(colmap_dir: Path, frames_dir: Path, logger: logging.Logger
         logger.error(f"No frame_*.jpg or frame_*.png files in {frames_dir}")
         return False
 
-    logger.info(f"Creating images/ symlink: {images_dir} → {frames_dir.resolve()}")
+    logger.info(f"Creating images/ symlink: {images_dir} -> {frames_dir.resolve()}")
     try:
         # Prefer symlink (saves disk space)
         if images_dir.exists() or images_dir.is_symlink():
-            images_dir.unlink() if images_dir.is_symlink() else shutil.rmtree(images_dir)
+            if images_dir.is_symlink():
+                images_dir.unlink()
+            else:
+                shutil.rmtree(images_dir)
         images_dir.symlink_to(frames_dir.resolve())
         logger.info(f"  Symlinked {len(frame_files)} frames")
     except OSError:
@@ -157,30 +227,39 @@ def ensure_images_dir(colmap_dir: Path, frames_dir: Path, logger: logging.Logger
 # ── Run gsplat training ────────────────────────────────────────────────
 
 def run_gsplat_training(
+    trainer_script: Path,
     colmap_dir: Path,
     output_dir: Path,
     iterations: int,
     logger: logging.Logger,
 ) -> tuple:
     """
-    Launch gsplat simple_trainer as a subprocess.
+    Launch gsplat simple_trainer.py as a subprocess using sys.executable.
+
+    The script is run with cwd set to its parent directory so that
+    relative imports (datasets.colmap, utils) resolve correctly.
 
     Returns:
         (success: bool, log_output: str)
     """
     cmd = [
-        sys.executable, "-m", "gsplat.scripts.simple_trainer",
+        sys.executable, str(trainer_script),
         "default",
         "--data_dir", str(colmap_dir),
         "--result_dir", str(output_dir),
         "--max_steps", str(iterations),
         "--data_factor", "1",
+        "--disable_viewer",
+        "--save_ply",
     ]
 
     logger.info("=" * 62)
     logger.info("  Launching gsplat simple_trainer")
     logger.info("=" * 62)
-    logger.info(f"  Command: {' '.join(cmd)}")
+    logger.info(f"  Python:      {sys.executable}")
+    logger.info(f"  Script:      {trainer_script}")
+    logger.info(f"  CWD:         {trainer_script.parent}")
+    logger.info(f"  Command:     {' '.join(cmd)}")
     logger.info(f"  Data dir:    {colmap_dir}")
     logger.info(f"  Result dir:  {output_dir}")
     logger.info(f"  Iterations:  {iterations}")
@@ -199,13 +278,14 @@ def run_gsplat_training(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,  # line-buffered
+            cwd=str(trainer_script.parent),  # so relative imports work
         )
 
         # Stream output in real-time
         for line in iter(process.stdout.readline, ""):
             line = line.rstrip()
             if line:
-                logger.info(f"  gsplat │ {line}")
+                logger.info(f"  gsplat | {line}")
                 full_output.append(line)
 
         process.wait()
@@ -221,8 +301,8 @@ def run_gsplat_training(
             return False, "\n".join(full_output)
 
     except FileNotFoundError:
-        logger.error("Failed to launch gsplat. Is gsplat installed?")
-        logger.error("  Install: pip install gsplat==1.3.0")
+        logger.error(f"Failed to launch Python: {sys.executable}")
+        logger.error("  Check that your venv is properly activated.")
         return False, ""
     except Exception as e:
         logger.error(f"Unexpected error running gsplat: {e}")
@@ -231,13 +311,16 @@ def run_gsplat_training(
 
 # ── Extract PSNR from training log ─────────────────────────────────────
 
-def extract_final_psnr(log_output: str, logger: logging.Logger) -> float | None:
+def extract_final_psnr(log_output: str, logger: logging.Logger):
     """
     Parse gsplat training output for the final PSNR value.
 
     gsplat simple_trainer typically prints lines like:
         Step XXXXX: PSNR = XX.XX
     or similar patterns. We search for the last PSNR value.
+
+    Returns:
+        float or None
     """
     psnr_values = []
 
@@ -264,7 +347,7 @@ def extract_final_psnr(log_output: str, logger: logging.Logger) -> float | None:
 
         # Also report range if multiple values found
         if len(psnr_values) > 1:
-            logger.info(f"  PSNR progression: {psnr_values[0]:.2f} → {final_psnr:.2f} dB "
+            logger.info(f"  PSNR progression: {psnr_values[0]:.2f} -> {final_psnr:.2f} dB "
                         f"({len(psnr_values)} measurements)")
         return final_psnr
     else:
@@ -274,16 +357,16 @@ def extract_final_psnr(log_output: str, logger: logging.Logger) -> float | None:
 
 # ── Find and copy output .ply ──────────────────────────────────────────
 
-def find_and_copy_ply(
-    output_dir: Path,
-    logger: logging.Logger,
-) -> Path | None:
+def find_and_copy_ply(output_dir: Path, logger: logging.Logger):
     """
     Find the trained .ply file in gsplat's output directory and copy
     to outputs/splat/scene.ply for downstream use.
 
     gsplat simple_trainer saves .ply files in various subdirectory
     structures depending on version. We search recursively.
+
+    Returns:
+        Path or None
     """
     # Search for .ply files in the output directory
     ply_files = sorted(output_dir.rglob("*.ply"), key=lambda p: p.stat().st_mtime)
@@ -349,8 +432,9 @@ def main():
     # Setup logging
     logger = setup_logging(project_root / "logs")
     logger.info("=" * 62)
-    logger.info("  RoboScene+ — Gaussian Splatting Training (gsplat)")
+    logger.info("  RoboScene+ -- Gaussian Splatting Training (gsplat)")
     logger.info("=" * 62)
+    logger.info(f"  Python:       {sys.executable}")
     logger.info(f"  COLMAP dir:   {colmap_dir}")
     logger.info(f"  Output dir:   {output_dir}")
     logger.info(f"  Iterations:   {args.iterations}")
@@ -361,7 +445,18 @@ def main():
     log_gpu_info(logger)
     logger.info("")
 
-    # ── Step 2: Validate inputs ────────────────────────────────────────
+    # ── Step 2: Download gsplat trainer if needed ──────────────────────
+    logger.info("Ensuring gsplat trainer script is available...")
+    try:
+        trainer_script = ensure_gsplat_trainer(project_root, logger)
+    except Exception as e:
+        logger.error(f"Failed to download gsplat trainer: {e}")
+        logger.error("Check internet connectivity or manually place files in")
+        logger.error(f"  {project_root / 'scripts' / 'gsplat_examples'}/")
+        sys.exit(1)
+    logger.info("")
+
+    # ── Step 3: Validate inputs ────────────────────────────────────────
     if not validate_colmap_dir(colmap_dir, logger):
         logger.error("COLMAP directory validation failed. Aborting.")
         sys.exit(1)
@@ -372,8 +467,9 @@ def main():
         sys.exit(1)
     logger.info("")
 
-    # ── Step 3: Run gsplat training ────────────────────────────────────
+    # ── Step 4: Run gsplat training ────────────────────────────────────
     success, log_output = run_gsplat_training(
+        trainer_script=trainer_script,
         colmap_dir=colmap_dir,
         output_dir=output_dir,
         iterations=args.iterations,
@@ -387,23 +483,24 @@ def main():
         logger.error("=" * 62)
         logger.error("  Check the log output above for errors.")
         logger.error("  Common issues:")
-        logger.error("    - gsplat not installed: pip install gsplat==1.3.0")
+        logger.error("    - gsplat not installed: pip install gsplat")
+        logger.error("    - Missing deps: pip install tyro viser nerfview==0.0.2")
+        logger.error("      torchmetrics[image] tensorboard")
         logger.error("    - COLMAP files malformed: re-run VGGT (Session 2)")
         logger.error("    - CUDA OOM: reduce --iterations or check GPU memory")
         sys.exit(1)
 
-    # ── Step 4: Extract PSNR ───────────────────────────────────────────
+    # ── Step 5: Extract PSNR ───────────────────────────────────────────
     logger.info("")
     logger.info("Extracting PSNR from training log...")
     final_psnr = extract_final_psnr(log_output, logger)
 
-    # ── Step 5: Find and copy output .ply ──────────────────────────────
+    # ── Step 6: Find and copy output .ply ──────────────────────────────
     logger.info("")
     logger.info("Locating output .ply file...")
     scene_ply = find_and_copy_ply(output_dir, logger)
 
-    # ── Step 6: Save training metadata ─────────────────────────────────
-    import json
+    # ── Step 7: Save training metadata ─────────────────────────────────
     meta = {
         "colmap_dir": str(colmap_dir),
         "output_dir": str(output_dir),
@@ -413,6 +510,8 @@ def main():
         "scene_ply_size_mb": round(scene_ply.stat().st_size / (1024 * 1024), 2)
             if scene_ply else None,
         "training_success": success,
+        "gsplat_tag": GSPLAT_TAG,
+        "python_executable": sys.executable,
     }
     meta_path = output_dir / "splat_metadata.json"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -429,20 +528,20 @@ def main():
     if final_psnr is not None:
         logger.info(f"  Final PSNR:    {final_psnr:.2f} dB")
     else:
-        logger.info(f"  Final PSNR:    (could not parse)")
+        logger.info("  Final PSNR:    (could not parse)")
     if scene_ply:
         logger.info(f"  Scene PLY:     {scene_ply}")
         logger.info(f"  PLY size:      {scene_ply.stat().st_size / (1024 * 1024):.1f} MB")
     else:
-        logger.info(f"  Scene PLY:     NOT FOUND — check output directory")
+        logger.info("  Scene PLY:     NOT FOUND -- check output directory")
     logger.info(f"  Metadata:      {meta_path}")
-    logger.info(f"")
-    logger.info(f"  ✅ Ready for Session 4 (Grounded SAM2 Semantics)")
-    logger.info(f"")
-    logger.info(f"  Download to Mac:")
-    logger.info(f"    scp -r -J jrameshs@knuckles.cs.ucl.ac.uk \\")
+    logger.info("")
+    logger.info("  Ready for Session 4 (Grounded SAM2 Semantics)")
+    logger.info("")
+    logger.info("  Download to Mac:")
+    logger.info("    scp -r -J jrameshs@knuckles.cs.ucl.ac.uk \\")
     logger.info(f"      jrameshs@bluestreak.cs.ucl.ac.uk:{output_dir}/ \\")
-    logger.info(f"      ~/3D-Spatial-Reconstruction/outputs/splat/")
+    logger.info("      ~/3D-Spatial-Reconstruction/outputs/splat/")
     logger.info("=" * 62)
 
 

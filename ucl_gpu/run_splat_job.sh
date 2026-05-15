@@ -93,10 +93,15 @@ echo "COLMAP sparse files found at $COLMAP_DIR/sparse/"
 # ── Check gsplat is installed ─────────────────────────────────────────
 
 if ! python -c "import gsplat" 2>/dev/null; then
-    echo "gsplat not installed. Installing gsplat==1.3.0..."
-    pip install gsplat==1.3.0
+    echo "gsplat not installed. Installing gsplat..."
+    pip install gsplat
 fi
 echo "gsplat version: $(python -c 'import gsplat; print(gsplat.__version__)' 2>/dev/null || echo 'unknown')"
+
+# Install extra deps needed by gsplat's example simple_trainer.py
+echo "Checking simple_trainer dependencies..."
+pip install -q tyro viser "nerfview==0.0.2" "torchmetrics[image]" tensorboard \
+    imageio "numpy<2.0.0" scikit-learn tqdm opencv-python Pillow pyyaml 2>/dev/null
 echo ""
 
 # ── Run Gaussian Splatting training ────────────────────────────────────
