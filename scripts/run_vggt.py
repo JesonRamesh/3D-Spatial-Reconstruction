@@ -24,6 +24,8 @@ import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"  # allow MPS to use all memory
+# Route HF downloads to scratch (large model — don't fill home dir on UCL GPU)
+os.environ.setdefault("HF_HOME", "/scratch0/jrameshs/hf_cache")
 
 import argparse
 import glob
@@ -105,13 +107,24 @@ def select_dtype(device: torch.device) -> torch.dtype:
 # ── VGGT inference ─────────────────────────────────────────────────────
 
 def load_model(device: torch.device, logger: logging.Logger) -> VGGT:
-    """Load VGGT-1B from HuggingFace hub."""
-    logger.info("Loading VGGT-1B model from HuggingFace...")
+    """
+    Load VGGT-1B weights from HuggingFace.
+
+    VGGT stores weights as model.pt (not pytorch_model.bin), so
+    from_pretrained() doesn't work. We use hf_hub_download instead.
+    """
+    from huggingface_hub import hf_hub_download
+
+    logger.info("Loading VGGT-1B model from HuggingFace (facebook/VGGT-1B)...")
+    logger.info(f"  HF cache: {os.environ.get('HF_HOME', '~/.cache/huggingface')}")
     t0 = time.time()
 
-    model = VGGT.from_pretrained("facebook/VGGT-1B")
-    model.eval()
-    model = model.to(device)
+    model_path = hf_hub_download(repo_id="facebook/VGGT-1B", filename="model.pt")
+    logger.info(f"  Weights: {model_path}")
+
+    model = VGGT()
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model = model.to(device).eval()
 
     elapsed = time.time() - t0
     logger.info(f"Model loaded in {elapsed:.1f}s")
