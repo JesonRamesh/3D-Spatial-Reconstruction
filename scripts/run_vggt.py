@@ -38,6 +38,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image as PILImage
 
 # ── VGGT imports ───────────────────────────────────────────────────────
 from vggt.models.vggt import VGGT
@@ -131,6 +132,63 @@ def load_model(device: torch.device, logger: logging.Logger) -> VGGT:
     return model
 
 
+def resize_frames_to_resolution(
+    image_paths: list,
+    resolution: int,
+    logger: logging.Logger,
+) -> tuple:
+    """
+    Load frames with PIL and resize to (resolution, resolution) using LANCZOS.
+    Returns:
+        images_tensor: [S, 3, resolution, resolution] float32 in [0, 1]
+        original_wh:   list of (width, height) tuples — original frame dimensions
+    """
+    import torchvision.transforms.functional as TVF
+
+    tensors = []
+    original_wh = []
+
+    for p in image_paths:
+        img = PILImage.open(p).convert("RGB")
+        original_wh.append(img.size)  # (width, height) before resize
+        img_resized = img.resize((resolution, resolution), PILImage.LANCZOS)
+        tensors.append(TVF.to_tensor(img_resized))  # [3, H, W] in [0,1]
+
+    images_tensor = torch.stack(tensors)  # [S, 3, resolution, resolution]
+    logger.debug(f"  Resized {len(image_paths)} frames to {resolution}×{resolution} (LANCZOS)")
+    return images_tensor, original_wh
+
+
+def scale_intrinsics(
+    intrinsic: np.ndarray,
+    original_wh: list,
+    resolution: int,
+) -> np.ndarray:
+    """
+    Scale camera intrinsics from VGGT's internal resolution back to the
+    original frame dimensions.
+
+    VGGT predicts K assuming a square (resolution×resolution) input.
+    We need K scaled to the original image size for correct unprojection
+    and COLMAP export.
+
+    Args:
+        intrinsic:   [S, 3, 3] at VGGT resolution (resolution×resolution)
+        original_wh: list of S (width, height) tuples
+        resolution:  VGGT input resolution (e.g. 518)
+
+    Returns:
+        intrinsic_scaled: [S, 3, 3] scaled to original image dimensions
+    """
+    intrinsic_scaled = intrinsic.copy()
+    for i, (w, h) in enumerate(original_wh):
+        scale_x = w / resolution
+        scale_y = h / resolution
+        intrinsic_scaled[i, 0] *= scale_x  # fx, cx
+        intrinsic_scaled[i, 1] *= scale_y  # fy, cy
+    return intrinsic_scaled
+
+
 def run_inference_batch(
     model: VGGT,
     images: torch.Tensor,
@@ -143,14 +201,15 @@ def run_inference_batch(
     Run VGGT on a batch of images.
 
     Args:
-        images: [S, 3, H, W] tensor in [0, 1], loaded at img_load_resolution
+        images: [S, 3, resolution, resolution] tensor in [0, 1]
+                already resized to vggt_resolution before calling this
         device: torch device
         dtype: torch dtype for autocast
-        vggt_resolution: internal VGGT resolution (always 518)
+        vggt_resolution: VGGT input resolution (matches images spatial dims)
 
     Returns:
         extrinsic: [S, 3, 4] numpy  (cam-from-world, OpenCV convention)
-        intrinsic: [S, 3, 3] numpy  (at vggt_resolution scale)
+        intrinsic: [S, 3, 3] numpy  (at vggt_resolution scale — caller scales)
         depth_map: [S, H, W, 1] numpy
         depth_conf: [S, H, W] numpy
         world_points: [S, H, W, 3] numpy
@@ -158,11 +217,8 @@ def run_inference_batch(
     S = images.shape[0]
     logger.debug(f"  Inference on {S} frames, resolution={vggt_resolution}")
 
-    # Resize to VGGT's fixed 518×518
-    images_518 = F.interpolate(
-        images, size=(vggt_resolution, vggt_resolution),
-        mode="bilinear", align_corners=False
-    )
+    # Images are already at vggt_resolution — pass directly
+    images_518 = images  # naming kept for minimal diff; shape [S,3,res,res]
 
     with torch.no_grad():
         # Use autocast for CUDA, manual cast for MPS/CPU
@@ -375,6 +431,10 @@ def main():
                         help="Depth confidence threshold for COLMAP points (adaptive if too high)")
     parser.add_argument("--max_points", type=int, default=100000,
                         help="Max 3D points for COLMAP reconstruction")
+    parser.add_argument("--resolution", type=int, default=518,
+                        help="Resize frames to this square resolution before VGGT "
+                             "inference (default: 518, VGGT's training resolution). "
+                             "Lower values reduce VRAM at some quality cost.")
     parser.add_argument("--dry_run", action="store_true",
                         help="Process only the first 10 frames (diagnostic mode)")
     parser.add_argument("--config", type=str, default="config.yaml",
@@ -440,10 +500,11 @@ def main():
     model = load_model(device, logger)
 
     # ── Load and preprocess images ─────────────────────────────────────
-    vggt_resolution = 518
-    img_load_resolution = 1024
+    vggt_resolution = args.resolution
+    img_load_resolution = vggt_resolution  # we load directly at target resolution
 
-    logger.info(f"Loading images at {img_load_resolution}px (VGGT runs at {vggt_resolution}px)...")
+    logger.info(f"Input resolution: {vggt_resolution}×{vggt_resolution} "
+                f"(VGGT training res=518, current={'✅ native' if vggt_resolution == 518 else '⚠️ rescaled'})")
     t_load = time.time()
 
     # Process in batches to avoid OOM during loading too
@@ -465,13 +526,21 @@ def main():
         logger.info(f"Batch {batch_idx + 1}/{num_batches}: "
                      f"frames {start + 1}–{end} ({len(batch_paths)} frames)")
 
-        # Load images
+        # Load and resize images using PIL LANCZOS
         t_batch = time.time()
-        images, original_coords = load_and_preprocess_images_square(
-            batch_paths, img_load_resolution
+        images, original_wh_batch = resize_frames_to_resolution(
+            batch_paths, vggt_resolution, logger
         )
         images = images.to(device)
-        original_coords = original_coords.to(device)
+
+        # original_coords in load_and_preprocess_images_square format:
+        # [x1, y1, x2, y2, width, height] — here images fill the full square
+        # so we build a compatible array from original_wh
+        original_coords_batch = np.array([
+            [0.0, 0.0, float(vggt_resolution), float(vggt_resolution),
+             float(w), float(h)]
+            for w, h in original_wh_batch
+        ], dtype=np.float32)
 
         logger.info(f"  Images loaded: {images.shape} in {time.time() - t_batch:.1f}s")
 
@@ -483,6 +552,9 @@ def main():
         logger.info(f"  Inference: {inf_time:.1f}s "
                      f"({inf_time / len(batch_paths):.2f}s/frame)")
 
+        # Scale intrinsics from vggt_resolution back to original frame dimensions
+        intrinsic = scale_intrinsics(intrinsic, original_wh_batch, vggt_resolution)
+
         # Store results
         all_extrinsics.append(extrinsic)
         all_intrinsics.append(intrinsic)
@@ -490,10 +562,10 @@ def main():
         all_depth_confs.append(depth_conf)
         all_world_points.append(world_points)
         all_images.append(images.cpu())
-        all_original_coords.append(original_coords.cpu().numpy())
+        all_original_coords.append(original_coords_batch)
 
         # Clear GPU memory between batches
-        del images, original_coords
+        del images
         if device.type == "cuda":
             torch.cuda.empty_cache()
         elif device.type == "mps":
