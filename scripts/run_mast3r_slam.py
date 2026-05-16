@@ -321,10 +321,10 @@ def run_slam(
     cmd = [
         sys.executable,
         str(main_script),
-        "--input",  str(video_path),
-        "--config", str(config_path),
-        "--output", str(slam_out),
-        "--device", device,
+        "--dataset", str(video_path),
+        "--config",  str(config_path),
+        "--save-as", str(slam_out),
+        "--no-viz",
     ]
 
     logger.info("Starting MASt3R-SLAM")
