@@ -74,4 +74,16 @@ Thumbs.db
 logs/*.log
 
 # Jupyter
-.ipynb_checkpoints/
+.ipynb_checkpoints/data/frames/frames
+data/frames_subset/
+data/mast3r_out/
+outputs/splat/
+outputs/splat_mast3r/
+outputs/splat_mast3r_v2/
+outputs/semantic/
+weights/
+logs/
+*.ply
+*.splat
+*.pth
+*.pkl
