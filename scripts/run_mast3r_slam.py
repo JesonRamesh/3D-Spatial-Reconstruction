@@ -400,18 +400,57 @@ def run_slam(
 # ---------------------------------------------------------------------------
 
 
-def _find_ply(slam_output_dir: Path) -> Optional[Path]:
-    """Return the first .ply file found in *slam_output_dir*, else None."""
-    candidates = sorted(slam_output_dir.glob("**/*.ply"))
-    if not candidates:
-        return None
-    # Prefer files whose names suggest a dense/final cloud
-    preferred_keywords = ("cloud", "map", "points", "dense", "final", "output")
-    for kw in preferred_keywords:
-        for p in candidates:
-            if kw in p.stem.lower():
-                return p
-    return candidates[0]  # fall back to whichever comes first alphabetically
+def _read_pose_txt(
+    txt_path: Path,
+) -> List[Tuple[float, np.ndarray, np.ndarray]]:
+    """Parse a MASt3R-SLAM trajectory text file.
+
+    Each non-comment, non-empty line has the format::
+
+        timestamp  tx ty tz  qx qy qz qw
+
+    Returns a list of ``(timestamp, t_c2w, q_xyzw)`` tuples sorted by
+    timestamp, where *t_c2w* is a ``(3,)`` float64 translation vector and
+    *q_xyzw* is a ``(4,)`` float64 quaternion in ``[qx, qy, qz, qw]`` order
+    as expected by ``scipy.spatial.transform.Rotation.from_quat``.
+    """
+    entries: List[Tuple[float, np.ndarray, np.ndarray]] = []
+    with open(txt_path, "r") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            ts     = float(parts[0])
+            t_c2w  = np.array([float(parts[1]),
+                               float(parts[2]),
+                               float(parts[3])], dtype=np.float64)
+            q_xyzw = np.array([float(parts[4]),
+                               float(parts[5]),
+                               float(parts[6]),
+                               float(parts[7])], dtype=np.float64)
+            entries.append((ts, t_c2w, q_xyzw))
+    entries.sort(key=lambda e: e[0])
+    return entries
+
+
+def _read_image_size(png_path: Path) -> Tuple[int, int]:
+    """Return ``(width, height)`` of a PNG by reading the IHDR chunk.
+
+    Works without Pillow/cv2.  Falls back to ``(1920, 1080)`` on any error.
+    """
+    try:
+        with open(png_path, "rb") as fh:
+            fh.read(8)           # PNG signature
+            fh.read(4)           # IHDR chunk length
+            fh.read(4)           # b'IHDR'
+            w = int.from_bytes(fh.read(4), "big")
+            h = int.from_bytes(fh.read(4), "big")
+        return w, h
+    except Exception:
+        return 1920, 1080
 
 
 def _parse_poses_json(
@@ -576,69 +615,50 @@ def _read_ply_points(
     return xyz, rgb
 
 
-def _intrinsics_to_params(
-    intrinsics: Dict[str, Any],
-    w: int,
-    h: int,
-) -> np.ndarray:
-    """Build a PINHOLE params array ``[fx, fy, cx, cy]`` from intrinsics dict.
-
-    Falls back to sensible defaults (fx = fy = max(w, h),
-    principal point at image centre) when intrinsics are absent.
-    """
-    if "fl_x" in intrinsics:
-        fx = float(intrinsics["fl_x"])
-        fy = float(intrinsics.get("fl_y", fx))
-    elif "camera_angle_x" in intrinsics:
-        fx = float(w) / (2.0 * np.tan(float(intrinsics["camera_angle_x"]) / 2.0))
-        if "camera_angle_y" in intrinsics:
-            fy = float(h) / (2.0 * np.tan(float(intrinsics["camera_angle_y"]) / 2.0))
-        else:
-            fy = fx
-    else:
-        fx = fy = float(max(w, h))
-
-    cx = float(intrinsics.get("cx", w / 2.0))
-    cy = float(intrinsics.get("cy", h / 2.0))
-    return np.array([fx, fy, cx, cy], dtype=np.float64)
-
-
 # ---------------------------------------------------------------------------
 # convert_to_colmap — main function
 # ---------------------------------------------------------------------------
 
 
 def convert_to_colmap(slam_output_dir: Path, output_dir: Path) -> None:
-    """Convert raw MASt3R-SLAM output into a COLMAP-compatible sparse model.
+    """Convert MASt3R-SLAM output into a COLMAP-compatible sparse model.
 
-    Searches *slam_output_dir* for a .ply point cloud and a pose file
-    (``transforms.json``, ``poses.json``, any ``*.json``, or ``*.npz``).
-    Writes the standard COLMAP sparse layout used by ``train_splat.py``::
+    Expected MASt3R-SLAM output layout inside *slam_output_dir*::
+
+        slam_output/
+        ├── room_video.txt                 — trajectory (one line per keyframe)
+        │                                    ``timestamp tx ty tz qx qy qz qw``
+        ├── room_video.ply                 — dense point cloud
+        └── keyframes/
+            └── room_video/
+                └── <timestamp>.png        — keyframe images
+
+    Produces::
 
         output_dir/
+        ├── images/
+        │   ├── frame_0001.jpg             — keyframes renamed + converted
+        │   └── …
         └── sparse/
             └── 0/
-                ├── cameras.bin   — one PINHOLE camera per frame
-                ├── images.bin    — one entry per frame with R, t from poses
-                └── points3D.bin  — XYZ + RGB from the .ply cloud
-
-    The ``images/`` sub-directory is also symlinked (or its path recorded)
-    so that gsplat's data loader can find frames alongside the sparse model.
+                ├── cameras.bin            — single shared PINHOLE camera
+                ├── images.bin             — one entry per keyframe
+                └── points3D.bin           — full dense point cloud
 
     Args:
-        slam_output_dir: Directory returned by :func:`run_slam`.
-        output_dir: Root output directory (same value passed to
-            :func:`run_slam`).  ``sparse/0/`` is created inside it.
+        slam_output_dir: Path returned by :func:`run_slam`
+            (``output_dir/slam_output/``).
+        output_dir: Root output directory; ``images/`` and ``sparse/0/``
+            are written here.
 
     Raises:
-        FileNotFoundError: If *slam_output_dir* does not exist.
-        RuntimeError: If conversion fails due to malformed data.
+        FileNotFoundError: If *slam_output_dir* does not exist or no
+            trajectory ``.txt`` is found.
+        RuntimeError: If no keyframe PNGs are found.
     """
-    # Lazy import so the module is usable without sys.path tricks when
-    # run from the project root, but also works when the scripts/ dir is
-    # on sys.path (e.g. on bluestreak after `cd roboscene-plus`).
+    from scipy.spatial.transform import Rotation
     import importlib.util as _ilu
-    import os as _os
+    import shutil
 
     slam_output_dir = Path(slam_output_dir).resolve()
     output_dir      = Path(output_dir).resolve()
@@ -649,14 +669,14 @@ def convert_to_colmap(slam_output_dir: Path, output_dir: Path) -> None:
         )
 
     # ------------------------------------------------------------------ #
-    # Locate colmap_utils                                                 #
+    # Load colmap_utils via importlib (works regardless of sys.path)     #
     # ------------------------------------------------------------------ #
     _scripts_dir = Path(__file__).resolve().parent
     _spec = _ilu.spec_from_file_location(
         "colmap_utils", _scripts_dir / "colmap_utils.py"
     )
-    _cu = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
-    _spec.loader.exec_module(_cu)       # type: ignore[union-attr]
+    _cu = _ilu.module_from_spec(_spec)   # type: ignore[arg-type]
+    _spec.loader.exec_module(_cu)        # type: ignore[union-attr]
 
     write_cameras_binary  = _cu.write_cameras_binary
     write_images_binary   = _cu.write_images_binary
@@ -664,157 +684,164 @@ def convert_to_colmap(slam_output_dir: Path, output_dir: Path) -> None:
     rotmat_to_qvec        = _cu.rotmat_to_qvec
 
     # ------------------------------------------------------------------ #
-    # Output directory                                                    #
+    # 1. Locate the trajectory .txt file                                  #
     # ------------------------------------------------------------------ #
-    sparse_dir = output_dir / "sparse" / "0"
-    sparse_dir.mkdir(parents=True, exist_ok=True)
+    txt_candidates = sorted(slam_output_dir.glob("*.txt"))
+    if not txt_candidates:
+        raise FileNotFoundError(
+            f"No trajectory .txt found in {slam_output_dir}\n"
+            f"  Expected: slam_output/<video_stem>.txt"
+        )
+    txt_path   = txt_candidates[0]       # typically only one .txt
+    video_stem = txt_path.stem           # e.g. "room_video"
+    logger.info("Trajectory : %s", txt_path.name)
+
+    pose_entries = _read_pose_txt(txt_path)
+    if not pose_entries:
+        raise RuntimeError(f"Trajectory file is empty or unparseable: {txt_path}")
+    logger.info("Poses      : %d keyframes", len(pose_entries))
+
+    # Build a timestamp-string → (t_c2w, q_xyzw) lookup for exact matching;
+    # also keep a sorted float array for nearest-neighbour fallback.
+    ts_to_pose: Dict[str, Tuple[np.ndarray, np.ndarray]] = {
+        str(ts): (t, q) for ts, t, q in pose_entries
+    }
+    ts_sorted = np.array([e[0] for e in pose_entries], dtype=np.float64)
 
     # ------------------------------------------------------------------ #
-    # Locate + parse pose file                                            #
+    # 2. Locate keyframe PNGs                                             #
     # ------------------------------------------------------------------ #
-    poses: List[np.ndarray] = []
-    intrinsics: Dict[str, Any] = {}
-    pose_file_used: Optional[Path] = None
+    # Primary layout: keyframes/<video_stem>/<timestamp>.png
+    kf_dir = slam_output_dir / "keyframes" / video_stem
+    if not kf_dir.exists():
+        # Fallback: first sub-directory under keyframes/
+        kf_root      = slam_output_dir / "keyframes"
+        kf_subdirs   = [p for p in kf_root.iterdir() if p.is_dir()] if kf_root.exists() else []
+        kf_dir       = kf_subdirs[0] if kf_subdirs else kf_root
 
-    # Priority: transforms.json > poses.json > *.json > *.npz
-    json_candidates = (
-        list(slam_output_dir.glob("transforms.json"))
-        + list(slam_output_dir.glob("poses.json"))
-        + [p for p in slam_output_dir.glob("**/*.json")
-           if p.name not in ("transforms.json", "poses.json")]
-    )
-    npz_candidates = (
-        list(slam_output_dir.glob("poses.npz"))
-        + [p for p in slam_output_dir.glob("**/*.npz")
-           if p.name != "poses.npz"]
-    )
+    kf_pngs = sorted(kf_dir.glob("*.png"), key=lambda p: float(p.stem))
+    if not kf_pngs:
+        raise RuntimeError(
+            f"No keyframe PNGs found in {kf_dir}\n"
+            f"  Expected: keyframes/{video_stem}/<timestamp>.png"
+        )
+    logger.info("Keyframes  : %d PNGs in %s", len(kf_pngs), kf_dir)
 
-    for candidate in json_candidates:
+    # ------------------------------------------------------------------ #
+    # 3. Read image size from the first keyframe PNG                     #
+    # ------------------------------------------------------------------ #
+    img_w, img_h = _read_image_size(kf_pngs[0])
+    logger.info("Image size : %d × %d", img_w, img_h)
+
+    # iPhone 1× lens prior: fx = fy = max(w, h) * 1.2
+    fx = fy = float(max(img_w, img_h)) * 1.2
+    cx = img_w / 2.0
+    cy = img_h / 2.0
+    logger.info("Intrinsics : fx=fy=%.1f  cx=%.1f  cy=%.1f", fx, cx, cy)
+
+    # ------------------------------------------------------------------ #
+    # 4. Copy + rename keyframe PNGs → output_dir/images/frame_NNNN.jpg #
+    # ------------------------------------------------------------------ #
+    images_out = output_dir / "images"
+    images_out.mkdir(parents=True, exist_ok=True)
+
+    # Match each PNG to its pose (exact timestamp string, then nearest-neighbour)
+    matched: List[Tuple[Path, np.ndarray, np.ndarray]] = []
+    for png in kf_pngs:
+        ts_str = png.stem
+        if ts_str in ts_to_pose:
+            t_c2w, q_xyzw = ts_to_pose[ts_str]
+        else:
+            ts_val        = float(ts_str)
+            nn_idx        = int(np.argmin(np.abs(ts_sorted - ts_val)))
+            _, t_c2w, q_xyzw = pose_entries[nn_idx]
+            logger.debug("Timestamp %s → nearest %.6f", ts_str, pose_entries[nn_idx][0])
+        matched.append((png, t_c2w, q_xyzw))
+
+    for i, (png, _, _) in enumerate(matched):
+        dst = images_out / f"frame_{i + 1:04d}.jpg"
         try:
-            p, intr = _parse_poses_json(candidate)
-            if p:
-                poses, intrinsics, pose_file_used = p, intr, candidate
-                break
-        except Exception as exc:
-            logger.debug("Skipping %s: %s", candidate.name, exc)
-
-    if not poses:
-        for candidate in npz_candidates:
-            try:
-                p, intr = _parse_poses_npz(candidate)
-                if p:
-                    poses, intrinsics, pose_file_used = p, intr, candidate
-                    break
-            except Exception as exc:
-                logger.debug("Skipping %s: %s", candidate.name, exc)
-
-    if poses:
-        logger.info("Poses   : %d loaded from %s", len(poses), pose_file_used.name)
-    else:
-        logger.warning(
-            "No pose file found in %s — images will use identity poses",
-            slam_output_dir,
-        )
+            from PIL import Image as _PIL
+            _PIL.open(png).convert("RGB").save(dst, quality=95)
+        except ImportError:
+            # No Pillow: copy PNG bytes with .jpg extension (still readable
+            # by most loaders; file is actually PNG data)
+            shutil.copy2(png, dst)
+    logger.info("Copied %d keyframes → %s", len(matched), images_out)
 
     # ------------------------------------------------------------------ #
-    # Locate + read point cloud                                           #
+    # 5. cameras.bin — one shared PINHOLE camera per frame               #
     # ------------------------------------------------------------------ #
-    ply_path = _find_ply(slam_output_dir)
-    if ply_path:
-        logger.info("PLY     : %s", ply_path.relative_to(slam_output_dir))
-        xyz, rgb = _read_ply_points(ply_path)
-    else:
-        logger.warning("No .ply found in %s — points3D.bin will be empty",
-                       slam_output_dir)
-        xyz = np.zeros((0, 3), dtype=np.float64)
-        rgb = np.zeros((0, 3), dtype=np.uint8)
-
-    # ------------------------------------------------------------------ #
-    # Collect frame image names from output_dir/images/                  #
-    # ------------------------------------------------------------------ #
-    images_dir  = output_dir / "images"
-    frame_names: List[str] = []
-    if images_dir.exists():
-        frame_names = sorted(p.name for p in images_dir.glob("frame_*.jpg"))
-    if not frame_names:
-        # Synthesise names from pose count so COLMAP files stay consistent
-        n_frames = max(len(poses), 1)
-        frame_names = [f"frame_{i+1:04d}.jpg" for i in range(n_frames)]
-        logger.warning(
-            "images/ directory empty or missing — using %d synthetic frame names",
-            n_frames,
-        )
-
-    n_frames = len(frame_names)
-
-    # Image dimensions: prefer intrinsics dict, else default 1920×1080
-    img_w = int(intrinsics.get("w", 1920))
-    img_h = int(intrinsics.get("h", 1080))
-
-    # ------------------------------------------------------------------ #
-    # Build cameras list — one PINHOLE camera per frame                  #
-    # ------------------------------------------------------------------ #
-    params = _intrinsics_to_params(intrinsics, img_w, img_h)
+    n_frames      = len(matched)
+    camera_params = np.array([fx, fy, cx, cy], dtype=np.float64)
     cameras = [
         {
             "camera_id": i + 1,
             "model":     "PINHOLE",
             "width":     img_w,
             "height":    img_h,
-            "params":    params,       # shared intrinsics across all frames
+            "params":    camera_params,
         }
         for i in range(n_frames)
     ]
 
     # ------------------------------------------------------------------ #
-    # Build images list — R, t from c2w poses                            #
+    # 6. images.bin — c2w (t, q) → w2c (R, t) via scipy Rotation        #
     # ------------------------------------------------------------------ #
-    images = []
-    for idx, name in enumerate(frame_names):
-        if idx < len(poses):
-            c2w = poses[idx]                   # 4×4 camera-to-world
-            R_c2w = c2w[:3, :3]
-            t_c2w = c2w[:3, 3]
-            # COLMAP convention: world-to-camera
-            R_w2c = R_c2w.T
-            t_w2c = -R_w2c @ t_c2w
-        else:
-            R_w2c = np.eye(3, dtype=np.float64)
-            t_w2c = np.zeros(3, dtype=np.float64)
+    sparse_dir = output_dir / "sparse" / "0"
+    sparse_dir.mkdir(parents=True, exist_ok=True)
 
-        images.append({
-            "image_id":     idx + 1,
-            "qvec":         rotmat_to_qvec(R_w2c),
-            "tvec":         t_w2c,
-            "camera_id":    idx + 1,
-            "name":         name,
-            "point2D_xys":  np.zeros((0, 2), dtype=np.float64),
-            "point3D_ids":  np.array([], dtype=np.int64),
+    images_colmap = []
+    for idx, (_, t_c2w, q_xyzw) in enumerate(matched):
+        # scipy convention: [qx, qy, qz, qw]
+        R_c2w = Rotation.from_quat(q_xyzw).as_matrix()  # (3, 3)
+        R_w2c = R_c2w.T
+        t_w2c = -R_w2c @ t_c2w
+        qvec  = rotmat_to_qvec(R_w2c)                    # [qw, qx, qy, qz]
+        images_colmap.append({
+            "image_id":    idx + 1,
+            "qvec":        qvec,
+            "tvec":        t_w2c,
+            "camera_id":   idx + 1,
+            "name":        f"frame_{idx + 1:04d}.jpg",
+            "point2D_xys": np.zeros((0, 2), dtype=np.float64),
+            "point3D_ids": np.array([], dtype=np.int64),
         })
 
     # ------------------------------------------------------------------ #
-    # Build points3D list from PLY                                       #
+    # 7. points3D.bin — load .ply with open3d                            #
     # ------------------------------------------------------------------ #
+    ply_candidates = sorted(slam_output_dir.glob("*.ply"))
+    xyz = np.zeros((0, 3), dtype=np.float64)
+    rgb = np.zeros((0, 3), dtype=np.uint8)
+    if ply_candidates:
+        ply_path = ply_candidates[0]
+        logger.info("Point cloud: %s", ply_path.name)
+        xyz, rgb = _read_ply_points(ply_path)
+    else:
+        logger.warning("No .ply found in %s — points3D.bin will be empty",
+                       slam_output_dir)
+
     points3d = [
         {
             "point3D_id": i + 1,
             "xyz":        xyz[i],
             "rgb":        rgb[i],
             "error":      1.0,
-            "track":      [],          # no 2-D observations needed for init
+            "track":      [],   # empty tracks — identical to VGGT pipeline
         }
         for i in range(len(xyz))
     ]
 
     # ------------------------------------------------------------------ #
-    # Write COLMAP binary files via colmap_utils                         #
+    # 8. Write COLMAP binary files via colmap_utils                      #
     # ------------------------------------------------------------------ #
-    write_cameras_binary(cameras,  sparse_dir / "cameras.bin")
-    write_images_binary(images,    sparse_dir / "images.bin")
-    write_points3D_binary(points3d, sparse_dir / "points3D.bin")
+    write_cameras_binary(cameras,        sparse_dir / "cameras.bin")
+    write_images_binary(images_colmap,   sparse_dir / "images.bin")
+    write_points3D_binary(points3d,      sparse_dir / "points3D.bin")
 
     logger.info("cameras.bin  : %d cameras written",  len(cameras))
-    logger.info("images.bin   : %d images written",   len(images))
+    logger.info("images.bin   : %d images written",   len(images_colmap))
     logger.info("points3D.bin : %d points written",   len(points3d))
     logger.info("COLMAP sparse: %s", sparse_dir)
 
