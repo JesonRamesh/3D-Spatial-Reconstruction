@@ -38,6 +38,7 @@ import argparse
 import json
 import sys
 import time
+import urllib.request
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -100,27 +101,76 @@ def pick_device(preference: str) -> str:
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
-def load_grounding_dino(device: str):
+
+_GDINO_WEIGHTS_URL = (
+    "https://github.com/IDEA-Research/GroundingDINO/releases/download/"
+    "v0.1.0-alpha/groundingdino_swint_ogc.pth"
+)
+_GDINO_WEIGHTS_FILENAME = "groundingdino_swint_ogc.pth"
+
+
+def download_gdino_weights(weights_dir: str) -> str:
     """
-    Load GroundingDINO using the groundingdino package.
-    Weights are downloaded automatically on first run to
-    ~/.cache/huggingface/hub  (via huggingface_hub) or can be pre-placed at
-    weights/groundingdino_swint_ogc.pth.
+    Download GroundingDINO SwinT_OGC weights from the official GitHub release
+    to <weights_dir>/groundingdino_swint_ogc.pth.
+    Skips download if the file already exists.
+
+    Returns the absolute path to the weights file.
+    """
+    dest_dir  = Path(weights_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / _GDINO_WEIGHTS_FILENAME
+
+    if dest_path.exists():
+        info(f"GroundingDINO weights already cached: {dest_path}")
+        return str(dest_path)
+
+    info(f"Downloading GroundingDINO weights → {dest_path}")
+    info(f"  URL: {_GDINO_WEIGHTS_URL}")
+
+    # Progress callback — prints MB downloaded
+    _last: Dict = {"mb": 0}
+    def _progress(block_num: int, block_size: int, total_size: int) -> None:
+        downloaded = block_num * block_size
+        mb = downloaded / 1024 ** 2
+        total_mb = total_size / 1024 ** 2 if total_size > 0 else "?"
+        if mb - _last["mb"] >= 50 or block_num == 0:
+            print(f"  ... {mb:.0f} / {total_mb} MB", flush=True)
+            _last["mb"] = mb
+
+    try:
+        urllib.request.urlretrieve(_GDINO_WEIGHTS_URL, str(dest_path), _progress)
+    except Exception as exc:
+        # Remove partial file on failure
+        if dest_path.exists():
+            dest_path.unlink()
+        err(f"Download failed: {exc}\n"
+            f"Download manually from:\n  {_GDINO_WEIGHTS_URL}\n"
+            f"and save to  {dest_path}")
+        raise SystemExit(1) from exc
+
+    ok(f"GroundingDINO weights downloaded ({dest_path.stat().st_size / 1024**2:.0f} MB)")
+    return str(dest_path)
+
+
+def load_grounding_dino(device: str, weights_dir: str):
+    """
+    Load GroundingDINO (SwinT_OGC) using the groundingdino package.
+    Config is resolved from inside the installed package.
+    Weights are downloaded via download_gdino_weights() if not already present.
     """
     try:
         from groundingdino.util.inference import load_model
     except ImportError as exc:
         err("groundingdino not found.  Install with:\n"
-            "  pip install groundingdino-py\n"
-            "  # or: pip install git+https://github.com/IDEA-Research/GroundingDINO.git")
+            "  pip install git+https://github.com/IDEA-Research/GroundingDINO.git")
         raise SystemExit(1) from exc
 
-    # GroundingDINO config shipped inside the package
+    # Config — shipped inside the groundingdino package
     import groundingdino
-    pkg_dir = Path(groundingdino.__file__).parent
+    pkg_dir     = Path(groundingdino.__file__).parent
     config_path = pkg_dir / "config" / "GroundingDINO_SwinT_OGC.py"
     if not config_path.exists():
-        # fallback search
         candidates = list(pkg_dir.rglob("GroundingDINO_SwinT_OGC.py"))
         if candidates:
             config_path = candidates[0]
@@ -128,28 +178,11 @@ def load_grounding_dino(device: str):
             err(f"Could not locate GroundingDINO_SwinT_OGC.py inside {pkg_dir}")
             raise SystemExit(1)
 
-    # Weights: check local cache first, then HuggingFace hub
-    local_weights = Path("weights/groundingdino_swint_ogc.pth")
-    if local_weights.exists():
-        weights_path = str(local_weights)
-        info(f"GroundingDINO weights: {weights_path}  (local)")
-    else:
-        try:
-            from huggingface_hub import hf_hub_download
-            weights_path = hf_hub_download(
-                repo_id="ShilongLiu/GroundingDINO",
-                filename="groundingdino_swint_ogc.pth",
-                cache_dir="weights/hf_cache",
-            )
-            info(f"GroundingDINO weights: {weights_path}  (HuggingFace hub)")
-        except Exception as exc:
-            err("Could not download GroundingDINO weights automatically.\n"
-                "Download manually from:\n"
-                "  https://huggingface.co/ShilongLiu/GroundingDINO\n"
-                "and place at  weights/groundingdino_swint_ogc.pth")
-            raise SystemExit(1) from exc
+    # Weights — download to weights_dir if needed
+    weights_path = download_gdino_weights(weights_dir)
 
     info(f"Loading GroundingDINO  (config: {config_path.name})")
+    info(f"  weights: {weights_path}")
     model = load_model(str(config_path), weights_path, device=device)
     model.eval()
     return model
@@ -226,9 +259,9 @@ def gdino_predict(
     W, H = image_pil.size
     results: Dict[str, List[Dict]] = {lbl: [] for lbl in labels}
 
-    # Build a single caption: "label1 . label2 . label3 ."
-    # GroundingDINO matches phrase tokens to caption tokens.
-    caption = " . ".join(labels) + " ."
+    # Build caption: "label1 . label2 . label3" (no trailing dot, space-dot-space
+    # separator is the format GroundingDINO was trained on).
+    caption = " . ".join(labels)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -237,8 +270,8 @@ def gdino_predict(
                 model=model,
                 image=image_tensor,
                 caption=caption,
-                box_threshold=confidence_threshold,
-                text_threshold=confidence_threshold,
+                box_threshold=0.25,
+                text_threshold=0.20,
                 device=device,
             )
 
@@ -561,6 +594,11 @@ def parse_args() -> argparse.Namespace:
         "--skip_existing", action="store_true",
         help="Skip frames whose JSON output already exists.",
     )
+    parser.add_argument(
+        "--weights_dir", type=str,
+        default="/scratch0/jrameshs/gdino_weights",
+        help="Directory where GroundingDINO weights are cached / downloaded to.",
+    )
     return parser.parse_args()
 
 
@@ -618,7 +656,7 @@ def main():
     # -----------------------------------------------------------------------
     info("Loading models…")
     t0 = time.time()
-    gdino_model    = load_grounding_dino(device)
+    gdino_model    = load_grounding_dino(device, args.weights_dir)
     sam2_predictor = load_sam2(device)
     ok(f"Models loaded in {time.time() - t0:.1f}s")
 
