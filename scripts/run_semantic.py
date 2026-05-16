@@ -26,13 +26,29 @@ from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
-# Colour palette
+# Colour palette  (Tableau-style, one fixed colour per label)
 # ---------------------------------------------------------------------------
-PALETTE = [
+LABEL_COLOURS = {
+    "bed":     (0x4E, 0x79, 0xA7),  # steel blue
+    "desk":    (0x59, 0xA1, 0x4F),  # green
+    "chair":   (0xF2, 0x8E, 0x2B),  # orange
+    "laptop":  (0xE1, 0x57, 0x59),  # red
+    "shelf":   (0x76, 0xB7, 0xB2),  # teal
+    "door":    (0xED, 0xC9, 0x48),  # yellow
+    "window":  (0xB0, 0x7A, 0xA1),  # purple
+    "fan":     (0xFF, 0x9D, 0xA7),  # pink
+    "lamp":    (0x9C, 0x75, 0x5F),  # brown
+    "monitor": (0xBA, 0xB0, 0xAC),  # grey
+}
+# Fallback palette for any label not in LABEL_COLOURS
+_FALLBACK = [
     (255,  82,  82), (82, 182, 255), (82, 255, 140), (255, 210,  82),
     (210,  82, 255), (255, 140,  82), (82, 255, 220), (255,  82, 190),
-    (180, 255,  82), (255, 255, 140),
 ]
+
+def get_colour(label, colours_map):
+    """Return (R,G,B) for a label, using the fixed palette then fallback."""
+    return colours_map.get(label, LABEL_COLOURS.get(label, (200, 200, 200)))
 
 
 # ---------------------------------------------------------------------------
@@ -75,27 +91,43 @@ def mask_to_rle(mask):
 # Debug overlay
 # ---------------------------------------------------------------------------
 def save_debug(image_pil, detections, colours, path):
-    comp    = image_pil.convert("RGBA").copy()
-    overlay = Image.new("RGBA", comp.size, (0, 0, 0, 0))
-    draw    = ImageDraw.Draw(overlay)
+    """
+    Render filled semi-transparent masks (alpha=0.4), then bbox outlines,
+    then label text onto image_pil and save to path.
+    detections: {label: {bbox, confidence, mask_np (optional)}}
+    """
+    comp = image_pil.convert("RGBA").copy()
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
     except Exception:
         font = ImageFont.load_default()
+
+    # Pass 1 — filled semi-transparent masks (drawn onto comp directly)
     for label, d in detections.items():
-        r, g, b = colours.get(label, (200, 200, 200))
+        r, g, b = get_colour(label, colours)
         mask_np = d.get("mask_np")
-        if mask_np is not None and mask_np.any():
-            ml = Image.fromarray((mask_np * 100).astype(np.uint8), "L")
-            cl = Image.new("RGBA", comp.size, (r, g, b, 120))
-            overlay = Image.composite(cl, overlay, ml)
-            draw    = ImageDraw.Draw(overlay)
+        if mask_np is None or not mask_np.any():
+            continue
+        # Build a solid colour layer and use the mask as the alpha channel
+        colour_layer = Image.new("RGBA", comp.size, (r, g, b, int(255 * 0.4)))
+        # mask_np is bool HxW; convert to L-mode for use as alpha mask
+        alpha_mask = Image.fromarray((mask_np * 255).astype(np.uint8), mode="L")
+        comp = Image.composite(colour_layer, comp, alpha_mask)
+
+    # Pass 2 — bbox outlines + label text (drawn on a transparent overlay)
+    overlay = Image.new("RGBA", comp.size, (0, 0, 0, 0))
+    draw    = ImageDraw.Draw(overlay)
+    for label, d in detections.items():
+        r, g, b = get_colour(label, colours)
         x1, y1, x2, y2 = d["bbox"]
-        draw.rectangle([x1, y1, x2, y2], outline=(r, g, b, 230), width=2)
+        # Bounding box outline
+        draw.rectangle([x1, y1, x2, y2], outline=(r, g, b, 255), width=2)
+        # Label chip
         txt = f"{label} {d['confidence']:.2f}"
         tb  = draw.textbbox((x1, y1 - 16), txt, font=font)
-        draw.rectangle(tb, fill=(r, g, b, 200))
+        draw.rectangle(tb, fill=(r, g, b, 220))
         draw.text((x1, y1 - 16), txt, fill=(255, 255, 255, 255), font=font)
+
     Image.alpha_composite(comp, overlay).convert("RGB").save(str(path))
 
 
@@ -113,6 +145,8 @@ def parse_args():
     p.add_argument("--no_debug",      action="store_true")
     p.add_argument("--skip_existing", action="store_true")
     p.add_argument("--weights_dir",   type=str,   default="/scratch0/jrameshs/gdino_weights")
+    p.add_argument("--viz_only",      action="store_true",
+                   help="Skip inference; regenerate debug PNGs from existing JSON files.")
     return p.parse_args()
 
 
@@ -136,6 +170,40 @@ def main():
     debug_dir = args.output_dir / "debug"
     if not args.no_debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── viz_only: regenerate debug PNGs from existing JSONs, no inference ────
+    if args.viz_only:
+        if args.no_debug:
+            raise SystemExit("--viz_only requires debug output; remove --no_debug")
+        print("[INFO]  --viz_only mode: regenerating debug PNGs from JSON files")
+        from pycocotools import mask as coco_mask
+        redrawn = 0
+        for fp in tqdm(frames, desc="Visualising", unit="frame", colour="cyan"):
+            stem     = f"frame_{int(fp.stem):04d}" if fp.stem.isdigit() else fp.stem
+            json_path = args.output_dir / f"{stem}.json"
+            out_png   = debug_dir / f"{stem}_debug.png"
+            if not json_path.exists():
+                continue
+            data = json.loads(json_path.read_text())
+            if not data:
+                continue
+            image_pil = Image.open(fp).convert("RGB")
+            dets = {}
+            for lbl, v in data.items():
+                mask_np = None
+                if v.get("mask_rle"):
+                    rle = v["mask_rle"]
+                    rle["counts"] = rle["counts"].encode("utf-8")
+                    mask_np = coco_mask.decode(rle).astype(bool)
+                dets[lbl] = {
+                    "bbox":       v["bbox"],
+                    "confidence": v["confidence"],
+                    "mask_np":    mask_np,
+                }
+            save_debug(image_pil, dets, colours, out_png)
+            redrawn += 1
+        print(f"[OK]    Redrawn {redrawn} debug PNGs -> {debug_dir}")
+        return
 
     # ── load GroundingDINO — exact working pattern ───────────────────────────
     import groundingdino
