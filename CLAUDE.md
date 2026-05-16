@@ -60,7 +60,7 @@ No other student project does this. It solves a documented open problem in 3DGS 
 │   ├── run_semantic.py             ← ✅ DONE (Session 4, Grounded SAM2)
 │   ├── lift_semantics_3d.py        ← ✅ DONE (Session 5)
 │   ├── compute_confidence.py       ← ✅ DONE (Session 6 ★ novel contribution)
-│   ├── complete_dead_zones.py      ← ⬜ TODO Session 7
+│   ├── complete_dead_zones.py      ← ✅ DONE (Session 7)
 │   ├── build_scene_graph.py        ← ⬜ TODO Session 8
 │   └── query_scene.py              ← ⬜ TODO Session 8
 │
@@ -76,7 +76,13 @@ No other student project does this. It solves a documented open problem in 3DGS 
 │   ├── confidence_metadata.json    ← grid params + zone percentages ✅
 │   ├── navigability_map.png        ← HERO FIGURE for README ✅
 │   ├── scene_confidence_tagged.ply ← Gaussians tagged 0/1/2 ✅
-│   └── scene_graph.json            ← ⬜ TODO Session 8
+│   ├── dead_zones/                 ← Dead zone images + report ✅
+│   ├── dead_zone_report.json
+│   ├── dead_zone_summary.png
+│   ├── zone_0_original.png
+│   ├── zone_0_mask.png
+│   └── zone_0_inpainted.png
+└── scene_graph.json            ← ⬜ TODO Session 8
 │
 ├── ucl_gpu/
 │   ├── run_vggt_job.sh             ← ✅ DONE
@@ -243,10 +249,55 @@ source /usr/local/cuda/CUDA_VISIBILITY.csh   # restrict to 1 GPU (etiquette)
 | 4 | Grounded SAM2 | ✅ | ✅ DONE — 317 frames, 10 objects, outputs/semantic/ |
 | 5 | 3D semantic lifting | ❌ | ✅ DONE — outputs/objects_3d.json (10 objects + bboxes) |
 | 6 | Confidence map ★ | ❌ | ✅ DONE — confidence_map.npy + navigability_map.png + tagged splat |
-| 7 | Dead zone completion | ❌ | ⬜ TODO |
+| 7 | Dead zone completion | ❌ | ✅ DONE — outputs/dead_zones/ (LaMa inpainting) |
 | 8 | Scene graph + Claude API | ❌ | ⬜ TODO |
 | 9 | Gradio app + deploy | ❌ | ⬜ TODO |
 | 10 | README + polish | ❌ | ⬜ TODO |
+
+---
+
+## Session 7 — COMPLETE ✅
+
+### Script: scripts/complete_dead_zones.py
+**Pipeline:** confidence_map.npy → dead zone detection → closest keyframe → LaMa inpainting → summary figure
+
+**Key design decisions:**
+- Dead zone threshold: `confidence < 0.3` (matches low-confidence band from Session 6)
+- Connected components: `scipy.ndimage.label()` on dead mask
+- Camera source: `data/vggt_out/camera_poses.json` — dict keyed by `frame_XXXX.jpg` with `cam_to_world_4x4` + `intrinsic_3x3`
+- Image source: `data/frames/` (all 511 frames matched to 511 poses)
+- LaMa resize: images downscaled to max 1024px (multiples of 8) before inference, resized back after
+- LaMa singleton: model loaded once at module level, reused across zones
+- Fallback: median-fill + blur if `simple-lama-inpainting` unavailable or errors
+- LaMa install workaround: `pip3 install /tmp/simple-lama-inpainting` (cloned from GitHub; PyPI build broken on Python 3.13 due to `setuptools.__version__` KeyError + Pillow<10 constraint)
+- SSL fix required: `/Applications/Python\ 3.13/Install\ Certificates.command`
+
+**Results on room scene:**
+- Dead zones found: 1 large cluster (598,709 voxels = 74.84 m³) — the entire unobserved interior
+- Closest camera: frame_0304 (0.81 m from centroid)
+- Projection: centroid world=(-0.427, 0.128, 1.134) → pixel (u, v) via K + R^T(P-t)
+- Inpainting: LaMa `big-lama.pt` (196 MB), resized 4032×3024 → 1024×768
+
+**Output files:**
+```
+outputs/dead_zones/
+├── dead_zone_report.json       ← {num_found:1, num_processed:1, total_dead_volume_m3:74.84, zones:[...]}
+├── dead_zone_summary.png       ← dark-bg 3-col grid: Original | Mask | Inpainted
+├── zone_0_original.png         ← frame_0304 keyframe (4032×3024)
+├── zone_0_mask.png             ← circle mask radius=50px at projected centroid
+└── zone_0_inpainted.png        ← LaMa result (4032×3024, 8.5MB vs 13MB original)
+```
+
+**Run command:**
+```bash
+python3 scripts/complete_dead_zones.py \
+  --confidence_map outputs/confidence_map.npy \
+  --confidence_metadata outputs/confidence_metadata.json \
+  --splat_dir outputs/splat_mast3r_v2/ \
+  --output_dir outputs/dead_zones/ \
+  --min_zone_voxels 200 \
+  --max_zones 5
+```
 
 ---
 
