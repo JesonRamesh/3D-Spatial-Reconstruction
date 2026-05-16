@@ -156,7 +156,8 @@ def parse_args():
 def main():
     args    = parse_args()
     labels  = [l.strip() for l in args.labels.split(",") if l.strip()]
-    colours = {lbl: PALETTE[i % len(PALETTE)] for i, lbl in enumerate(labels)}
+    colours = {lbl: LABEL_COLOURS.get(lbl, _FALLBACK[i % len(_FALLBACK)])
+               for i, lbl in enumerate(labels)}
 
     # collect frames
     exts   = {".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"}
