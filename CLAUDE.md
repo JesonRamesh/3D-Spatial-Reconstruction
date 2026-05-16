@@ -229,7 +229,7 @@ source /usr/local/cuda/CUDA_VISIBILITY.csh   # restrict to 1 GPU (etiquette)
 | 1 | Scaffold + frame extraction | ❌ | ✅ DONE — 82 frames extracted |
 | 2 | VGGT reconstruction | ✅ | 🔄 Script done + MPS dry run verified. **Run full on bluestreak now.** |
 | 3 | Gaussian Splatting | ✅ | ⬜ Write train_splat.py → run on bluestreak |
-| 4 | Grounded SAM2 | ✅ | ⬜ TODO |
+| 4 | Grounded SAM2 | ✅ | ✅ DONE — scripts/run_semantic.py + ucl_gpu/run_semantic_job.sh |
 | 5 | 3D semantic lifting | ❌ | ⬜ TODO |
 | 6 | Confidence map ★ | ❌ | ⬜ TODO |
 | 7 | Dead zone completion | ❌ | ⬜ TODO |
@@ -571,3 +571,105 @@ On bluestreak: `export ANTHROPIC_API_KEY=sk-ant-...`
 - [ ] Limitations section present and honest
 - [ ] Git history has 10+ meaningful commits
 - [ ] Repo URL ready to paste into Humanoid application form
+
+## Session 4 — COMPLETE ✅
+
+### Script: scripts/run_semantic.py
+**Pipeline:** GroundingDINO (SwinT_OGC) detection → SAM2 (sam2.1_hiera_large) masks → pycocotools RLE JSON + debug PNGs
+
+**Key design decisions:**
+- `PYTORCH_ENABLE_MPS_FALLBACK=1` set before any torch import (MPS safety)
+- Single-caption multi-label query: `"bed . desk . chair . …"` for efficiency
+- Weights auto-downloaded via `huggingface_hub`; local `weights/` takes priority
+  - GDino: `ShilongLiu/GroundingDINO` → `groundingdino_swint_ogc.pth`
+  - SAM2: `facebook/sam2.1-hiera-large` → `sam2.1_hiera_large.pt`
+- Phrase→label matching: exact → substring → token fallback
+- Best-confidence detection per label per frame (no duplicates)
+- SAM2 box-mask fallback if SAM2 inference fails on a frame
+- `--skip_existing` flag for resumable runs on bluestreak
+
+**Output format:**
+```json
+{
+  "chair": {
+    "bbox": [142.3, 88.1, 410.7, 512.0],
+    "confidence": 0.7231,
+    "mask_rle": {"size": [720, 1280], "counts": "..."}
+  }
+}
+```
+
+**Job script:** `ucl_gpu/run_semantic_job.sh`
+- 6 h wall-time, 1 GPU (RTX 4070 Ti SUPER), 32 GB RAM
+- Venv: `/scratch0/jrameshs/roboscene_env`
+- All params overridable: `bash ucl_gpu/run_semantic_job.sh` (uses defaults)
+- Env vars: `FRAMES_DIR`, `OUTPUT_DIR`, `LABELS`, `CONFIDENCE`, `BATCH_SIZE`
+
+**Run on bluestreak:**
+```bash
+cd /scratch0/jrameshs/roboscene-plus
+git pull
+mkdir -p logs outputs/semantic outputs/semantic/debug
+
+# Install deps (first time only)
+pip install git+https://github.com/IDEA-Research/GroundingDINO.git
+pip install git+https://github.com/facebookresearch/sam2.git
+pip install pycocotools huggingface_hub tqdm colorama
+
+# Run (foreground — watch progress bar)
+python scripts/run_semantic.py \
+  --frames_dir data/mast3r_out/images \
+  --output_dir outputs/semantic \
+  --device cuda
+
+# OR background (SSH-disconnect safe)
+nohup python scripts/run_semantic.py \
+  --frames_dir data/mast3r_out/images \
+  --output_dir outputs/semantic \
+  --device cuda \
+  > logs/semantic.log 2>&1 &
+tail -f logs/semantic.log
+```
+
+**Download outputs to Mac:**
+```bash
+scp -r -J jrameshs@knuckles.cs.ucl.ac.uk \
+  jrameshs@bluestreak.cs.ucl.ac.uk:/scratch0/jrameshs/roboscene-plus/outputs/semantic/ \
+  ~/3D-Spatial-Reconstruction/outputs/
+```
+
+---
+
+## Session 3 — COMPLETE ✅
+
+### Final Pipeline
+Video (room_video.MOV, 2.5min, 1080p 60fps, 1x lens)
+→ MASt3R-SLAM (CVPR 2025, 54 keyframes, globally consistent)
+→ COLMAP conversion (317 frames, sparse/0/)
+→ nerfstudio splatfacto (60000 steps)
+→ scene.ply (outputs/splat_mast3r_v2/scene.ply)
+
+### Quality Verification
+- Rendered frame matches ground truth: bed, headboard, fan, 
+  chair, laptop all correctly reconstructed ✅
+- Bird's eye point cloud shows correct room layout ✅
+- 60k steps marginally better than 30k — use v2 as final
+
+### Key Output Files (on Mac)
+outputs/splat_mast3r_v2/scene.ply  ← FINAL SPLAT
+outputs/mast3r_out/room_video.ply  ← point cloud
+data/mast3r_out/sparse/0/          ← COLMAP format
+data/mast3r_out/images/            ← 317 keyframes
+
+### Known Limitations (document in README)
+- Wall ghosting from limited keyframes (54)
+- Not photorealistic from novel views outside training set
+- SuperSplat looks distorted from outside — navigate inside with W key
+
+### Bluestreak Paths
+/scratch0/jrameshs/roboscene-plus/outputs/splat_mast3r_v2/splat.ply
+/scratch0/jrameshs/roboscene-plus/data/mast3r_out/
+
+### MASt3R-SLAM Install Location
+/scratch0/jrameshs/MASt3R-SLAM/
+Checkpoints: /scratch0/jrameshs/MASt3R-SLAM/checkpoints/
