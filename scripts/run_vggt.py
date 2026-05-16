@@ -39,6 +39,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image as PILImage
+from typing import List, Tuple
 
 # ── VGGT imports ───────────────────────────────────────────────────────
 from vggt.models.vggt import VGGT
@@ -526,6 +527,99 @@ def _stitch_batch_poses(
     return aligned[:, :3, :]             # [B, 3, 4]
 
 
+# ── Frame similarity sorting ──────────────────────────────────────────
+
+def sort_frames_by_similarity(
+    frame_paths: List[str],
+) -> Tuple[List[str], List[int]]:
+    """
+    Reorder *frame_paths* so that visually similar frames are adjacent,
+    reducing discontinuities at VGGT batch boundaries.
+
+    Algorithm
+    ---------
+    1. Load every frame as a 64×64 grayscale thumbnail (cheap I/O).
+    2. Compute a normalised 64-bin intensity histogram per thumbnail.
+    3. Choose an anchor: the frame whose histogram is closest (L2) to
+       the global mean histogram — a 'central' viewpoint that avoids
+       starting at an outlier.
+    4. Greedy nearest-neighbour traversal (O(N²)) using histogram
+       correlation as the similarity metric.  At each step the
+       correlation against all unvisited histograms is computed in one
+       vectorised matrix multiply, so no Python loop over N frames.
+
+    Parameters
+    ----------
+    frame_paths : list of str
+        Unsorted image file paths.
+
+    Returns
+    -------
+    sorted_paths : List[str]
+        Paths reordered by visual similarity.
+    order : List[int]
+        Permutation indices: ``sorted_paths[i] == frame_paths[order[i]]``.
+    """
+    n = len(frame_paths)
+    if n == 0:
+        return [], []
+    if n == 1:
+        return list(frame_paths), [0]
+
+    thumb_size = (64, 64)
+    n_bins = 64
+    print(f"[sort_frames] Loading {n} thumbnails …")
+
+    histograms: List[np.ndarray] = []
+    for path in frame_paths:
+        try:
+            img = PILImage.open(path).convert("L").resize(thumb_size, PILImage.BILINEAR)
+            arr = np.asarray(img, dtype=np.float32)
+            hist, _ = np.histogram(arr.ravel(), bins=n_bins, range=(0.0, 256.0))
+            total = float(hist.sum())
+            histograms.append(hist.astype(np.float32) / total if total > 0
+                               else hist.astype(np.float32))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[sort_frames] Warning: cannot load '{path}': {exc}. "
+                  "Using zero histogram.")
+            histograms.append(np.zeros(n_bins, dtype=np.float32))
+
+    H = np.stack(histograms)          # (N, 64)
+
+    # Anchor: frame nearest the mean histogram
+    mean_hist = H.mean(axis=0)
+    start = int(np.argmin(np.linalg.norm(H - mean_hist, axis=1)))
+
+    # Greedy nearest-neighbour using histogram correlation
+    # corr(a, b) = dot(a - mean_a, b - mean_b) / (||a - mean_a|| * ||b - mean_b||)
+    visited = np.zeros(n, dtype=bool)
+    order: List[int] = []
+    current = start
+    visited[current] = True
+    order.append(current)
+
+    H_c = H - H.mean(axis=1, keepdims=True)   # centred histograms (N, 64)
+
+    for step in range(1, n):
+        c_vec = H_c[current]                   # (64,)
+        num   = H_c @ c_vec                    # (N,) — vectorised dot products
+        denom = (np.sqrt((H_c ** 2).sum(axis=1)) *
+                 float(np.sqrt((c_vec ** 2).sum())))   # (N,)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            corr = np.where(denom > 1e-10, num / denom, 0.0)
+        corr[visited] = -np.inf               # mask already-visited
+        current = int(np.argmax(corr))
+        visited[current] = True
+        order.append(current)
+        if step % 100 == 0:
+            print(f"[sort_frames]   {step}/{n} frames ordered")
+
+    sorted_paths = [frame_paths[i] for i in order]
+    print(f"[sort_frames] Done — anchor was original index {start} "
+          f"({os.path.basename(frame_paths[start])})")
+    return sorted_paths, order
+
+
 # ── Config loading ─────────────────────────────────────────────────────
 
 def load_config(config_path: Path) -> dict:
@@ -566,6 +660,14 @@ def main():
                              "Overlap frames are used to compute a rigid alignment "
                              "between adjacent batches, eliminating 180-degree flips "
                              "at batch boundaries.")
+    parser.add_argument(
+        "--sort_frames",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sort frames by visual similarity before batching to reduce "
+             "discontinuities at batch boundaries (default: True). "
+             "Use --no-sort_frames to disable.",
+    )
     parser.add_argument("--dry_run", action="store_true",
                         help="Process only the first 10 frames (diagnostic mode)")
     parser.add_argument("--config", type=str, default="config.yaml",
@@ -622,6 +724,40 @@ def main():
         image_paths = image_paths[:dry_limit]
         logger.info(f"🧪 DRY RUN: processing only first {len(image_paths)} frames")
         logger.info(f"  (limited to {dry_limit} for {device.type} memory safety)")
+
+    # ── Optional similarity-based frame reordering ────────────────────
+    # Problem: VGGT processes frames in independent batches. With 511
+    # still photos the default filename order may place visually
+    # dissimilar shots in consecutive batches, causing 8.8× translation
+    # jumps at boundaries. Sorting so that adjacent frames share
+    # overlapping viewpoints maximises the signal available to the
+    # overlap-based pose stitcher (_stitch_batch_poses).
+    if args.sort_frames and not args.dry_run:
+        logger.info("[sort_frames] Sorting frames by visual similarity "
+                    "(--no-sort_frames to skip) …")
+        original_paths = list(image_paths)
+        image_paths, order = sort_frames_by_similarity(image_paths)
+
+        # Persist the reordering map for downstream traceability
+        frame_order_map = {
+            "sorted_paths": image_paths,
+            "original_paths": original_paths,
+            "sorted_to_original_index": {
+                str(si): int(oi) for si, oi in enumerate(order)
+            },
+            "original_to_sorted_index": {
+                str(oi): int(si) for si, oi in enumerate(order)
+            },
+        }
+        frame_order_path = output_dir / "frame_order.json"
+        frame_order_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(frame_order_path, "w") as fh:
+            json.dump(frame_order_map, fh, indent=2)
+        logger.info(f"[sort_frames] Reordering map → {frame_order_path}")
+    elif args.sort_frames and args.dry_run:
+        logger.info("[sort_frames] Skipping similarity sort in dry-run mode.")
+    else:
+        logger.info("[sort_frames] Frame sorting disabled (--no-sort_frames).")
 
     image_names = [os.path.basename(p) for p in image_paths]
     total_frames = len(image_paths)
