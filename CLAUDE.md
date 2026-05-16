@@ -43,34 +43,45 @@ No other student project does this. It solves a documented open problem in 3DGS 
 ├── requirements.txt
 │
 ├── data/
-│   ├── raw/                        ← Original video file
+│   ├── raw/                        ← Original video file (room.MOV)
 │   ├── frames/                     ← 82 extracted frames ✅
-│   └── vggt_out/                   ← VGGT outputs (COLMAP format + depth maps)
+│   ├── mast3r_out/                 ← MASt3R-SLAM COLMAP output ✅
+│   │   └── sparse/0/              ← cameras.bin images.bin points3D.bin
+│   └── vggt_out/                   ← VGGT outputs (511 poses + depth maps) ✅
+│       ├── camera_poses.json
+│       └── sparse/
 │
 ├── scripts/
 │   ├── extract_frames.py           ← ✅ DONE
-│   ├── run_vggt.py                 ← ✅ DONE (dry run verified on MPS)
+│   ├── run_vggt.py                 ← ✅ DONE
 │   ├── colmap_utils.py             ← ✅ DONE (custom COLMAP binary writer)
-│   ├── train_splat.py              ← ⬜ TODO Session 3
-│   ├── run_semantic.py             ← ⬜ TODO Session 4
-│   ├── lift_semantics_3d.py        ← ⬜ TODO Session 5
-│   ├── compute_confidence.py       ← ⬜ TODO Session 6
+│   ├── run_mast3r_slam.py          ← ✅ DONE (Session 3)
+│   ├── train_splat.py              ← ✅ DONE (Session 3, nerfstudio splatfacto)
+│   ├── run_semantic.py             ← ✅ DONE (Session 4, Grounded SAM2)
+│   ├── lift_semantics_3d.py        ← ✅ DONE (Session 5)
+│   ├── compute_confidence.py       ← ✅ DONE (Session 6 ★ novel contribution)
 │   ├── complete_dead_zones.py      ← ⬜ TODO Session 7
 │   ├── build_scene_graph.py        ← ⬜ TODO Session 8
 │   └── query_scene.py              ← ⬜ TODO Session 8
 │
 ├── outputs/
-│   ├── splat/                      ← Trained Gaussian Splat (.ply, .splat)
-│   ├── semantic/                   ← Per-frame semantic masks
-│   ├── objects_3d.json
-│   ├── confidence_map.npy
-│   ├── navigability_map.png        ← HERO FIGURE for README
-│   └── scene_graph.json
+│   ├── splat_mast3r_v2/            ← FINAL Gaussian Splat ✅
+│   │   └── scene.ply              ← 4.35M Gaussians, 60k steps
+│   ├── mast3r_out/
+│   │   └── room_video.ply         ← MASt3R point cloud (7.3M pts) ✅
+│   ├── semantic/                   ← 317 per-frame JSON masks ✅
+│   ├── objects_3d.json             ← 10 objects with bbox + confidence ✅
+│   ├── object_positions_2d.png     ← top-down scatter plot ✅
+│   ├── confidence_map.npy          ← 90×86×118 voxel grid ✅
+│   ├── confidence_metadata.json    ← grid params + zone percentages ✅
+│   ├── navigability_map.png        ← HERO FIGURE for README ✅
+│   ├── scene_confidence_tagged.ply ← Gaussians tagged 0/1/2 ✅
+│   └── scene_graph.json            ← ⬜ TODO Session 8
 │
 ├── ucl_gpu/
 │   ├── run_vggt_job.sh             ← ✅ DONE
-│   ├── run_splat_job.sh            ← ⬜ TODO
-│   └── run_semantic_job.sh         ← ⬜ TODO
+│   ├── run_splat_job.sh            ← ✅ DONE
+│   └── run_semantic_job.sh         ← ✅ DONE
 │
 ├── app/
 │   ├── app.py                      ← Gradio demo
@@ -227,11 +238,11 @@ source /usr/local/cuda/CUDA_VISIBILITY.csh   # restrict to 1 GPU (etiquette)
 | Session | What | GPU? | Status |
 |---|---|---|---|
 | 1 | Scaffold + frame extraction | ❌ | ✅ DONE — 82 frames extracted |
-| 2 | VGGT reconstruction | ✅ | 🔄 Script done + MPS dry run verified. **Run full on bluestreak now.** |
-| 3 | Gaussian Splatting | ✅ | ⬜ Write train_splat.py → run on bluestreak |
-| 4 | Grounded SAM2 | ✅ | ✅ DONE — scripts/run_semantic.py + ucl_gpu/run_semantic_job.sh |
-| 5 | 3D semantic lifting | ❌ | ⬜ TODO |
-| 6 | Confidence map ★ | ❌ | ⬜ TODO |
+| 2 | VGGT reconstruction | ✅ | ✅ DONE — 511 poses, depth maps in data/vggt_out/ |
+| 3 | Gaussian Splatting | ✅ | ✅ DONE — MASt3R-SLAM + nerfstudio splatfacto 60k steps |
+| 4 | Grounded SAM2 | ✅ | ✅ DONE — 317 frames, 10 objects, outputs/semantic/ |
+| 5 | 3D semantic lifting | ❌ | ✅ DONE — outputs/objects_3d.json (10 objects + bboxes) |
+| 6 | Confidence map ★ | ❌ | ✅ DONE — confidence_map.npy + navigability_map.png + tagged splat |
 | 7 | Dead zone completion | ❌ | ⬜ TODO |
 | 8 | Scene graph + Claude API | ❌ | ⬜ TODO |
 | 9 | Gradio app + deploy | ❌ | ⬜ TODO |
@@ -239,40 +250,30 @@ source /usr/local/cuda/CUDA_VISIBILITY.csh   # restrict to 1 GPU (etiquette)
 
 ---
 
-## Immediate Next Action — Run VGGT Full on bluestreak
+## Immediate Next Action — Session 7: Dead Zone Completion (Mac, no GPU)
 
-82 frames are already at `/scratch0/jrameshs/roboscene-plus/data/frames/`
+All inputs are ready locally:
+- `outputs/confidence_map.npy` — voxel confidence grid ✅
+- `outputs/confidence_metadata.json` — grid origin + shape ✅  
+- `outputs/splat_mast3r_v2/scene.ply` — Gaussian splat ✅
 
 ```bash
-# On bluestreak (after bash + activate):
-cd /scratch0/jrameshs/roboscene-plus
-git pull
-mkdir -p data/vggt_out/depths data/vggt_out/sparse logs
-export PYTHONPATH=/scratch0/jrameshs/vggt:$PYTHONPATH
+# Install deps first:
+pip3 install simple-lama-inpainting scipy
 
-nohup python scripts/run_vggt.py \
-  --frames_dir data/frames/ \
-  --output_dir data/vggt_out/ \
-  --batch_size 30 \
-  > logs/vggt_full.log 2>&1 &
-
-tail -f logs/vggt_full.log
+# Run:
+python scripts/complete_dead_zones.py \
+  --confidence_map outputs/confidence_map.npy \
+  --metadata outputs/confidence_metadata.json \
+  --splat_ply outputs/splat_mast3r_v2/scene.ply \
+  --output_dir outputs/
 ```
 
-Expected: 5–10 min. Verify when done:
-```bash
-ls data/vggt_out/depths/ | wc -l          # should be 82
-ls data/vggt_out/sparse/                  # cameras.bin images.bin points3D.bin
-python3 -c "
-import json, numpy as np, glob
-poses = json.load(open('data/vggt_out/camera_poses.json'))
-print(f'{len(poses)} camera poses')
-d = np.load(glob.glob('data/vggt_out/depths/*.npy')[0])
-print(f'Depth shape: {d.shape}, range: {d.min():.2f}–{d.max():.2f}m')
-"
-```
+Expected outputs:
+- `outputs/dead_zones/dz_0_inpainted.png` … `dz_4_inpainted.png`
+- `outputs/dead_zone_report.json`
 
-Then immediately chain Session 3 (Gaussian Splatting) in the same booking.
+Then move to Session 8 (Scene Graph + Claude API query).
 
 ---
 
@@ -335,7 +336,10 @@ open3d.visualization.draw_plotly([geometry])   # not draw()
 | Pose estimation | VGGT not COLMAP | CVPR 2025 Best Paper, 1-pass inference |
 | Gaussian Splatting | gsplat not FlashGS/nerfstudio | FlashGS = NVIDIA CUDA only, won't run on Mac |
 | Semantics | Grounded SAM2 open-vocab | Mirrors Humanoid KinetIQ VLM architecture |
-| Confidence metric | Opacity density × camera coverage | Cheap, interpretable, no GT needed |
+| Confidence metric | Point density × camera coverage | Cheap, interpretable, no GT needed — uses MASt3R point cloud + VGGT poses |
+| Point cloud source | MASt3R-SLAM (outputs/mast3r_out/room_video.ply) | 7.3M points, globally consistent |
+| Pose source for coverage | VGGT camera_poses.json (511 frames) | cam_to_world_4x4 matrices, auto-detected by load_poses() |
+| Camera coverage algorithm | Camera-centric O(C×r³) not O(V×C) | 200× faster; subsample to 200 cameras |
 | Query interface | Claude API | Mirrors KinetIQ System 2 VLM reasoning |
 | Deployment | HF Spaces + gsplat.js | Free, permanent URL, WebGL splat viewer |
 | GPU venv location | /scratch0 not ~ | Home = 10GB; PyTorch alone = 7GB |
@@ -571,6 +575,63 @@ On bluestreak: `export ANTHROPIC_API_KEY=sk-ant-...`
 - [ ] Limitations section present and honest
 - [ ] Git history has 10+ meaningful commits
 - [ ] Repo URL ready to paste into Humanoid application form
+
+## Session 6 — COMPLETE ✅
+
+### Script: scripts/compute_confidence.py
+**Novel contribution:** Voxel-level reconstruction confidence = 0.6 × point_density + 0.4 × camera_coverage
+
+**Key design decisions:**
+- Point cloud source: `outputs/mast3r_out/room_video.ply` (7.33M points)
+- Pose source: `data/vggt_out/camera_poses.json` — auto-detected `.json` format
+  - `_load_poses_from_json()` reads `cam_to_world_4x4` matrices directly
+  - Falls back to TUM `.txt` format if given a text file
+- Voxel grid: 90×86×118 at 5cm resolution (913,320 voxels)
+- Camera coverage: camera-centric loop O(C×r³), subsampled to 200 cameras
+- Pure-numpy PLY reader (no open3d — Python 3.13 incompatible)
+- Handles `objects_3d.json` as dict keyed by label (not list)
+- bbox from `bbox_min`/`bbox_max` keys (not flat `bbox_3d`)
+
+**Output files:**
+```
+outputs/confidence_map.npy          ← 3D float32 array (90, 86, 118)
+outputs/confidence_metadata.json    ← origin, shape, zone percentages
+outputs/navigability_map.png        ← HERO FIGURE: bird's-eye RAG map
+outputs/scene_confidence_tagged.ply ← 4.35M Gaussians + confidence_tag (0/1/2)
+outputs/objects_3d.json             ← updated: reconstruction_confidence + provenance
+```
+
+**Confidence results:**
+- High (>0.7): 0.4% — tightly triangulated regions
+- Medium (0.3–0.7): 34.1% — all main objects fall here (monitor 0.53, fan 0.49 …)
+- Low (<0.3): 65.6% — walls/corners/dead zones
+
+**Object provenance:**
+- Sparse: monitor, fan, lamp, laptop, chair, desk, bed
+- Inferred: window, shelf, door (near room boundaries)
+
+**Run command:**
+```bash
+python scripts/compute_confidence.py \
+  --splat_ply outputs/splat_mast3r_v2/scene.ply \
+  --point_cloud outputs/mast3r_out/room_video.ply \
+  --poses_file data/vggt_out/camera_poses.json \
+  --objects_file outputs/objects_3d.json \
+  --output_dir outputs/ \
+  --voxel_size 0.05
+```
+
+---
+
+## Session 5 — COMPLETE ✅
+
+### Script: scripts/lift_semantics_3d.py
+**Pipeline:** Semantic JSON masks + VGGT depth maps + camera poses → 3D object bounding boxes
+
+**Output:** `outputs/objects_3d.json` — 10 objects with centroid_3d, bbox_min, bbox_max, volume_m3, frames_seen
+**Hero figure:** `outputs/object_positions_2d.png` — top-down matplotlib scatter
+
+---
 
 ## Session 4 — COMPLETE ✅
 
