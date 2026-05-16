@@ -106,6 +106,18 @@ def parse_args() -> argparse.Namespace:
         default=2.0,
         help="Frame extraction rate (frames per second of video).",
     )
+    parser.add_argument(
+        "--skip_frames",
+        action="store_true",
+        default=False,
+        help="Skip frame extraction; assume images already exist at output_dir/images/.",
+    )
+    parser.add_argument(
+        "--skip_slam",
+        action="store_true",
+        default=False,
+        help="Skip SLAM; assume slam output already exists at output_dir/slam_output/.",
+    )
     return parser.parse_args()
 
 
@@ -872,24 +884,37 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 1 – extract frames
     # ------------------------------------------------------------------
-    logger.info("Step 1/3 — Extracting frames at %.1f fps …", args.fps)
-    frame_paths: List[str] = extract_frames(
-        args.video_path, args.output_dir, args.fps
-    )
-    logger.info("Extracted %d frames.", len(frame_paths))
+    if args.skip_frames:
+        images_dir = args.output_dir / "images"
+        frame_paths = sorted(str(p) for p in images_dir.glob("frame_*.jpg"))
+        logger.info(
+            "Skipping frame extraction — using existing images at %s (%d frames)",
+            images_dir, len(frame_paths),
+        )
+    else:
+        logger.info("Step 1/3 — Extracting frames at %.1f fps …", args.fps)
+        frame_paths = extract_frames(args.video_path, args.output_dir, args.fps)
+        logger.info("Extracted %d frames.", len(frame_paths))
 
     # ------------------------------------------------------------------
     # Step 2 – run SLAM
     # ------------------------------------------------------------------
-    logger.info("Step 2/3 — Running MASt3R-SLAM on device '%s' …", args.device)
-    slam_output_dir: Path = run_slam(
-        args.video_path,
-        args.mast3r_dir,
-        args.config,
-        args.output_dir,
-        args.device,
-    )
-    logger.info("SLAM output: %s", slam_output_dir)
+    slam_output_dir: Path = Path(args.output_dir) / "slam_output"
+    if args.skip_slam:
+        logger.info(
+            "Skipping SLAM — using existing output at %s",
+            slam_output_dir,
+        )
+    else:
+        logger.info("Step 2/3 — Running MASt3R-SLAM on device '%s' …", args.device)
+        slam_output_dir = run_slam(
+            args.video_path,
+            args.mast3r_dir,
+            args.config,
+            args.output_dir,
+            args.device,
+        )
+        logger.info("SLAM output: %s", slam_output_dir)
 
     # ------------------------------------------------------------------
     # Step 3 – convert to COLMAP
