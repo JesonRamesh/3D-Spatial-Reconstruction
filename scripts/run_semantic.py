@@ -301,35 +301,39 @@ def main():
                 Image.open(fp).save(str(out_png))
             continue
 
-        # SAM2 masks
+        # SAM2 masks — predict one box at a time; output is already numpy
         img_np    = np.array(Image.open(fp).convert("RGB"))
-        sel_boxes = np.array([best[l]["bbox"] for l in best], dtype=np.float32)
-        try:
-            import torch
-            sam2.set_image(img_np)
-            with torch.no_grad():
-                masks, _, _ = sam2.predict(
-                    point_coords     = None,
-                    point_labels     = None,
-                    box              = torch.from_numpy(sel_boxes).to(args.device),
-                    multimask_output = False,
-                )
-            if masks.ndim == 4:
-                masks = masks[:, 0]
-            masks_bool = masks.cpu().numpy().astype(bool)
-        except Exception as e:
-            tqdm.write(f"[WARN]  SAM2 failed {fp.name}: {e} -- box fallback")
-            masks_bool = np.zeros((len(best), H, W), dtype=bool)
-            for i, (x1, y1, x2, y2) in enumerate(sel_boxes):
-                masks_bool[i, max(0, int(y1)):min(H, int(y2)),
-                              max(0, int(x1)):min(W, int(x2))] = True
+        sam2.set_image(img_np)   # encode image once, reuse for all boxes
+        masks_bool = []
+        for lbl in best:
+            x1, y1, x2, y2 = best[lbl]["bbox"]
+            box_xyxy = np.array([x1, y1, x2, y2], dtype=np.float32)
+            try:
+                import torch
+                with torch.no_grad():
+                    masks_out, _, _ = sam2.predict(
+                        point_coords     = None,
+                        point_labels     = None,
+                        box              = box_xyxy,
+                        multimask_output = False,
+                    )
+                # masks_out: (1, H, W) numpy bool array
+                mask = masks_out[0].astype(bool)
+                tqdm.write(f"[DEBUG] {fp.name} {lbl} mask shape={mask.shape} "
+                           f"nonzero={mask.sum()}")
+            except Exception as e:
+                tqdm.write(f"[WARN]  SAM2 failed {fp.name} {lbl}: {e} -- box fallback")
+                mask = np.zeros((H, W), dtype=bool)
+                mask[max(0, int(y1)):min(H, int(y2)),
+                     max(0, int(x1)):min(W, int(x2))] = True
+            masks_bool.append(mask)
 
         # save JSON + debug PNG
         frame_data = {}
         debug_dets = {}
         image_pil  = Image.open(fp).convert("RGB")
         for i, lbl in enumerate(best):
-            mask_np = masks_bool[i] if i < len(masks_bool) else None
+            mask_np = masks_bool[i] if i < len(masks_bool) else np.zeros((H, W), dtype=bool)
             frame_data[lbl] = {
                 "bbox":       best[lbl]["bbox"],
                 "confidence": round(best[lbl]["confidence"], 4),
