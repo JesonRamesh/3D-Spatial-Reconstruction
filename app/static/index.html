@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RoboScene+ · 3D Semantic Viewer</title>
+  <style>
+    :root {
+      --bg:      #0f0f1a;
+      --panel:   rgba(12,12,28,0.90);
+      --border:  rgba(127,119,221,0.22);
+      --accent:  #7F77DD;
+      --text:    #e0e0f0;
+      --dim:     #7070a0;
+      --green:   #4ade80;
+      --amber:   #fbbf24;
+      --red:     #f87171;
+      --sidebar: 260px;
+      --topbar:  52px;
+    }
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    html, body { height:100%; overflow:hidden; background:var(--bg);
+      font-family:'Courier New',monospace; color:var(--text); }
+
+    /* ── Canvas lives behind everything ─────────────────────── */
+    canvas { position:fixed!important; inset:0; z-index:0; }
+
+    /* ── Top bar ─────────────────────────────────────────────── */
+    #topbar {
+      position:fixed; top:0; left:0; right:0; height:var(--topbar);
+      background:var(--panel); border-bottom:1px solid var(--border);
+      backdrop-filter:blur(14px); z-index:300;
+      display:flex; align-items:center; gap:14px; padding:0 20px;
+    }
+    .logo       { color:var(--accent); font-size:15px; font-weight:700; letter-spacing:.1em; }
+    .logo-tag   { color:var(--dim); font-size:10px; }
+    .spacer     { flex:1; }
+    .tbtn {
+      background:rgba(127,119,221,.12); color:var(--accent);
+      border:1px solid rgba(127,119,221,.35); border-radius:6px;
+      padding:6px 16px; font:inherit; font-size:12px; cursor:pointer;
+      transition:background .18s,color .18s,border-color .18s; white-space:nowrap;
+    }
+    .tbtn:hover   { background:rgba(127,119,221,.28); }
+    .tbtn.on      { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .tbtn.touring { background:#d97706; border-color:#d97706; color:#000; }
+    #load-indicator { font-size:11px; color:var(--dim); }
+
+    /* ── Sidebar ─────────────────────────────────────────────── */
+    #sidebar {
+      position:fixed; top:var(--topbar); left:0; bottom:0; width:var(--sidebar);
+      background:var(--panel); border-right:1px solid var(--border);
+      backdrop-filter:blur(14px); z-index:200;
+      display:flex; flex-direction:column; overflow:hidden;
+    }
+    .sec-head {
+      padding:14px 16px 6px; font-size:9px; font-weight:700;
+      letter-spacing:.18em; color:var(--dim); text-transform:uppercase;
+      border-bottom:1px solid var(--border);
+    }
+    #obj-list { flex:1; overflow-y:auto; overflow-x:hidden; }
+    #obj-list::-webkit-scrollbar { width:3px; }
+    #obj-list::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+    .obj-row {
+      display:flex; align-items:center; gap:10px; padding:11px 16px;
+      cursor:pointer; border-left:3px solid transparent;
+      transition:background .15s, border-color .15s;
+    }
+    .obj-row:hover  { background:rgba(127,119,221,.08); }
+    .obj-row.sel    { background:rgba(127,119,221,.14); border-left-color:var(--accent); }
+    .dot  { width:13px; height:13px; border-radius:3px; flex-shrink:0; }
+    .name { flex:1; font-size:13px; text-transform:capitalize; }
+    .badge {
+      font-size:9px; padding:2px 7px; border-radius:10px; font-weight:700;
+    }
+    .g  { background:rgba(74,222,128,.14);  color:var(--green); }
+    .a  { background:rgba(251,191,36,.14);  color:var(--amber); }
+    .r  { background:rgba(248,113,113,.14); color:var(--red);   }
+    .chip {
+      font-size:8px; padding:1px 6px; border-radius:8px;
+      border:1px solid rgba(255,255,255,.1); color:var(--dim); flex-shrink:0;
+    }
+    #stats {
+      padding:10px 16px 14px; font-size:11px; color:var(--dim);
+      line-height:2; border-top:1px solid var(--border);
+    }
+    #stats strong { color:var(--text); }
+
+    /* ── Tour dots ───────────────────────────────────────────── */
+    #tour-dots {
+      position:fixed; bottom:46px; left:50%; transform:translateX(-50%);
+      display:flex; gap:6px; z-index:250; transition:opacity .3s;
+    }
+    #tour-dots.hidden { opacity:0; pointer-events:none; }
+    .tdot { width:7px; height:7px; border-radius:50%;
+            background:rgba(255,255,255,.2); transition:background .3s; }
+    .tdot.on { background:var(--accent); }
+
+    /* ── Info card ───────────────────────────────────────────── */
+    #info-card {
+      position:fixed; top:66px; right:16px; z-index:260;
+      background:var(--panel); border:1px solid var(--border);
+      border-radius:10px; padding:14px 18px; min-width:210px;
+      backdrop-filter:blur(14px);
+      transition:opacity .25s, transform .25s;
+    }
+    #info-card.hidden { opacity:0; pointer-events:none; transform:translateY(-6px); }
+    #info-card h3 {
+      font-size:14px; color:var(--accent); margin-bottom:10px;
+      padding-left:9px; text-transform:capitalize; line-height:1;
+    }
+    .irow { display:flex; justify-content:space-between;
+            font-size:11px; padding:2px 0; color:var(--dim); }
+    .irow span:last-child { color:var(--text); text-align:right; }
+    .close-btn {
+      position:absolute; top:10px; right:12px; cursor:pointer;
+      color:var(--dim); font-size:16px; line-height:1;
+    }
+    .close-btn:hover { color:var(--text); }
+
+    /* ── 2-D label layer ─────────────────────────────────────── */
+    #lbl-layer { position:fixed; inset:0; pointer-events:none; z-index:50; }
+    .lbl {
+      position:absolute; transform:translate(-50%,-240%);
+      background:rgba(8,8,22,.82); border:1px solid var(--border);
+      border-radius:5px; padding:3px 9px;
+      font-size:10px; white-space:nowrap; opacity:.85;
+      transition:opacity .2s, border-color .2s;
+    }
+    .lbl.sel { border-color:var(--accent); opacity:1; background:rgba(127,119,221,.2); }
+
+    /* ── Hint bar ────────────────────────────────────────────── */
+    #hint {
+      position:fixed; bottom:14px; left:50%; transform:translateX(-50%);
+      background:rgba(8,8,22,.72); border:1px solid var(--border);
+      border-radius:20px; padding:5px 18px; font-size:10px; color:var(--dim);
+      pointer-events:none; z-index:200; backdrop-filter:blur(8px);
+    }
+
+    /* ── Loading overlay ─────────────────────────────────────── */
+    #loading {
+      position:fixed; inset:0; background:var(--bg);
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      z-index:900; transition:opacity .5s;
+    }
+    #loading.out { opacity:0; pointer-events:none; }
+    .ld-glyph  { font-size:42px; color:var(--accent); margin-bottom:12px;
+                 animation:pulse 2s ease-in-out infinite; }
+    .ld-title  { font-size:18px; margin-bottom:4px; }
+    .ld-sub    { font-size:12px; color:var(--dim); margin-bottom:26px; }
+    #ld-bar-w  { width:280px; height:4px; background:#1a1a30; border-radius:2px; overflow:hidden; }
+    #ld-bar    { height:100%; width:0%; background:var(--accent); border-radius:2px;
+                 transition:width .25s linear; }
+    #ld-msg    { margin-top:10px; font-size:11px; color:var(--dim); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+
+    /* ── Error overlay ───────────────────────────────────────── */
+    #err-box {
+      display:none; position:fixed; inset:0; align-items:center; justify-content:center;
+      background:rgba(0,0,0,.8); z-index:950;
+    }
+    #err-box.show { display:flex; }
+    .err-inner {
+      background:#1a0808; border:1px solid #7a2222; border-radius:10px;
+      padding:24px 32px; max-width:480px; color:#f87171; font-size:13px;
+      word-break:break-word; text-align:center;
+    }
+    .err-inner a { color:var(--accent); }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+
+<!-- Top bar -->
+<div id="topbar">
+  <span class="logo">⬡ RoboScene+</span>
+  <span class="logo-tag">3D Semantic Viewer</span>
+  <div class="spacer"></div>
+  <span id="load-indicator"></span>
+  <button class="tbtn" id="tour-btn" onclick="toggleTour()">▶ Tour</button>
+  <button class="tbtn" id="reset-btn" onclick="resetCam()">⌀ Reset</button>
+</div>
+
+<!-- Sidebar -->
+<div id="sidebar">
+  <div class="sec-head">Semantic Objects</div>
+  <div id="obj-list"></div>
+  <div class="sec-head" style="margin-top:0">Scene Info</div>
+  <div id="stats"></div>
+</div>
+
+<!-- 2-D floating labels -->
+<div id="lbl-layer"></div>
+
+<!-- Info card (top-right) -->
+<div id="info-card" class="hidden">
+  <span class="close-btn" onclick="selectObj(null)">×</span>
+  <h3 id="ic-name">—</h3>
+  <div id="ic-rows"></div>
+</div>
+
+<!-- Tour progress dots -->
+<div id="tour-dots" class="hidden"></div>
+
+<!-- Navigation hint -->
+<div id="hint">WASD · drag to look · scroll to zoom · click object to focus</div>
+
+<!-- Loading overlay -->
+<div id="loading">
+  <div class="ld-glyph">⬡</div>
+  <div class="ld-title">RoboScene+</div>
+  <div class="ld-sub">Loading 3D semantic reconstruction…</div>
+  <div id="ld-bar-w"><div id="ld-bar"></div></div>
+  <div id="ld-msg">Initialising…</div>
+</div>
+
+<!-- Error overlay -->
+<div id="err-box">
+  <div class="err-inner">
+    <b>Failed to load scene</b><br><br>
+    <span id="err-msg"></span><br><br>
+    <small>Make sure you launched the viewer with<br>
+    <code>python open_viewer.py</code> from the repo root.</small>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import * as GS from
+  'https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/build/gaussian-splats-3d.module.min.js';
+
+// ── Config ─────────────────────────────────────────────────────────────────────
+const SPLAT_CANDIDATES = [
+  '/outputs/scene_semantic_pruned.splat',
+  '/outputs/scene_semantic.splat',
+  '/outputs/scene_semantic.ply',
+];
+const OBJECTS_URL = '/outputs/objects_3d.json';
+
+const COLORS = {
+  bed:'#FFB6C1', desk:'#20B2AA', chair:'#4682B4', laptop:'#6495ED',
+  monitor:'#2F6F6F', fan:'#FF6347', lamp:'#FFD700', shelf:'#CD853F',
+  door:'#DEB887', window:'#87CEEB',
+};
+
+const HOME_POS  = [-0.1, 0.0, 1.5];
+const HOME_LOOK = [ 0.0, 0.3, 0.5];
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let viewer   = null;
+let objects  = {};
+let selected = null;
+let tourIdx  = 0;
+let tourTimeout = null;
+let touring  = false;
+
+// Camera animation
+let anim = null;       // {fromP, toP, fromL, toL, t0, dur, done}
+let introPhase = true;
+let introT0    = null;
+const INTRO_DUR = 5200;
+
+// DOM refs
+const ldBar  = document.getElementById('ld-bar');
+const ldMsg  = document.getElementById('ld-msg');
+const lblLayer = document.getElementById('lbl-layer');
+const infoCard = document.getElementById('info-card');
+const tourDots = document.getElementById('tour-dots');
+
+// 2D label elements
+const lblEls = {};
+
+// ── Easing ─────────────────────────────────────────────────────────────────────
+const ease = t => 1 - Math.pow(1 - t, 3);          // ease-out cubic
+const easeIO = t => t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+
+// ── Camera helpers ─────────────────────────────────────────────────────────────
+function cam()      { return viewer?.camera; }
+function controls() { return viewer?.controls; }
+
+function flyTo(toPos, toLook, dur = 1800, onDone = null) {
+  if (!cam()) return;
+  const ctrl = controls();
+  const fromP = cam().position.clone();
+  const fromL = ctrl ? ctrl.target.clone() : new THREE.Vector3(...HOME_LOOK);
+  if (ctrl) ctrl.enabled = false;
+  anim = {
+    fromP, toP: new THREE.Vector3(...toPos),
+    fromL, toL: new THREE.Vector3(...toLook),
+    t0: performance.now(), dur, onDone, done: false,
+  };
+}
+
+function tickAnim(now) {
+  if (!anim || anim.done) return;
+  const t = Math.min((now - anim.t0) / anim.dur, 1);
+  const e = easeIO(t);
+  cam().position.lerpVectors(anim.fromP, anim.toP, e);
+  const ctrl = controls();
+  if (ctrl) { ctrl.target.lerpVectors(anim.fromL, anim.toL, e); ctrl.update(); }
+  if (t >= 1) {
+    anim.done = true;
+    if (ctrl) ctrl.enabled = true;
+    anim.onDone?.();
+    anim = null;
+  }
+}
+
+function resetCam() {
+  stopTour();
+  selectObj(null);
+  flyTo(HOME_POS, HOME_LOOK, 1400);
+}
+window.resetCam = resetCam;
+
+// ── Intro orbit ─────────────────────────────────────────────────────────────────
+// Camera sweeps ~100° around the room center, then returns to home.
+const INTRO_CTR = new THREE.Vector3(0, 0.3, 0.5);
+const INTRO_R   = 1.7;
+
+function tickIntro(now) {
+  if (!cam()) return;
+  if (introT0 === null) introT0 = now;
+  const t  = Math.min((now - introT0) / INTRO_DUR, 1);
+  const et = ease(t);
+
+  // Arc from home angle to home+1.8 rad (≈103°), then the user takes over
+  const homeAngle  = Math.atan2(HOME_POS[0] - INTRO_CTR.x, HOME_POS[2] - INTRO_CTR.z);
+  const angle      = homeAngle + et * 1.8;
+  const y          = HOME_POS[1] + et * 0.25;
+
+  const ctrl = controls();
+  if (ctrl) ctrl.enabled = false;
+  cam().position.set(
+    INTRO_CTR.x + Math.sin(angle) * INTRO_R,
+    y,
+    INTRO_CTR.z + Math.cos(angle) * INTRO_R
+  );
+  if (ctrl) { ctrl.target.copy(INTRO_CTR); ctrl.update(); }
+  else { cam().lookAt(INTRO_CTR); }
+
+  if (t >= 1) {
+    introPhase = false;
+    flyTo(HOME_POS, HOME_LOOK, 1000, () => {
+      if (controls()) controls().enabled = true;
+    });
+  }
+}
+
+// ── 2D label projection ─────────────────────────────────────────────────────────
+function project(p3, camera) {
+  const v = new THREE.Vector3(...p3).project(camera);
+  return {
+    x: ( v.x + 1) / 2 * window.innerWidth,
+    y: (-v.y + 1) / 2 * window.innerHeight,
+    visible: v.z > -1 && v.z < 1 && v.z > 0,
+  };
+}
+
+function updateLabels() {
+  if (!cam()) return;
+  for (const [name, obj] of Object.entries(objects)) {
+    const el = lblEls[name];
+    if (!el || !obj.centroid_3d) continue;
+    const p = project(obj.centroid_3d, cam());
+    // Hide labels inside sidebar area
+    if (!p.visible || p.x < 270) { el.style.display = 'none'; continue; }
+    el.style.display = '';
+    el.style.left = p.x + 'px';
+    el.style.top  = p.y + 'px';
+  }
+}
+
+// ── Object selection ────────────────────────────────────────────────────────────
+function viewPosFor(name) {
+  const obj = objects[name];
+  if (!obj?.centroid_3d) return null;
+  const [cx, cy, cz] = obj.centroid_3d;
+  // Position camera 1.3 m in front and slightly above the object
+  return { pos: [cx, cy - 0.3, cz + 1.3], look: [cx, cy, cz] };
+}
+
+function selectObj(name) {
+  // Deselect previous
+  document.querySelectorAll('.obj-row').forEach(el => el.classList.remove('sel'));
+  for (const n of Object.keys(lblEls)) lblEls[n]?.classList.remove('sel');
+
+  selected = name;
+
+  if (!name) {
+    infoCard.classList.add('hidden');
+    return;
+  }
+
+  document.getElementById('or-' + name)?.classList.add('sel');
+  lblEls[name]?.classList.add('sel');
+
+  // Info card
+  const obj = objects[name];
+  if (obj) showInfo(name, obj);
+
+  // Fly camera
+  const fp = viewPosFor(name);
+  if (fp) flyTo(fp.pos, fp.look);
+}
+window.selectObj = selectObj;
+
+function showInfo(name, obj) {
+  const conf   = obj.reconstruction_confidence ?? 0;
+  const pct    = Math.round(conf * 100);
+  const cls    = conf > .7 ? 'g' : conf > .3 ? 'a' : 'r';
+  const prov   = obj.provenance ?? '—';
+  const vol    = obj.volume_m3 != null ? obj.volume_m3.toFixed(2) + ' m³' : '—';
+  const frames = obj.frames_seen ?? '—';
+  const c      = obj.centroid_3d ?? [0,0,0];
+
+  document.getElementById('ic-name').style.borderLeft = `3px solid ${COLORS[name]||'#aaa'}`;
+  document.getElementById('ic-name').textContent = name;
+  document.getElementById('ic-rows').innerHTML = `
+    <div class="irow"><span>Confidence</span><span class="badge ${cls}">${pct}%</span></div>
+    <div class="irow"><span>Provenance</span><span>${prov}</span></div>
+    <div class="irow"><span>Volume</span><span>${vol}</span></div>
+    <div class="irow"><span>Frames seen</span><span>${frames}</span></div>
+    <div class="irow"><span>Position&nbsp;(m)</span>
+      <span>(${c[0].toFixed(2)}, ${c[1].toFixed(2)}, ${c[2].toFixed(2)})</span></div>
+  `;
+  infoCard.classList.remove('hidden');
+}
+
+// ── Tour ────────────────────────────────────────────────────────────────────────
+function toggleTour() { touring ? stopTour() : startTour(); }
+window.toggleTour = toggleTour;
+
+function startTour() {
+  touring  = true;
+  tourIdx  = 0;
+  const btn = document.getElementById('tour-btn');
+  btn.textContent = '■ Stop';
+  btn.classList.add('touring');
+  tourDots.classList.remove('hidden');
+  nextTourStep();
+}
+
+function stopTour() {
+  touring = false;
+  clearTimeout(tourTimeout);
+  const btn = document.getElementById('tour-btn');
+  btn.textContent = '▶ Tour';
+  btn.classList.remove('touring');
+  tourDots.classList.add('hidden');
+}
+
+function nextTourStep() {
+  if (!touring) return;
+  const names = Object.keys(objects);
+  if (tourIdx >= names.length) { stopTour(); resetCam(); return; }
+  selectObj(names[tourIdx]);
+  // Highlight dot
+  document.querySelectorAll('.tdot').forEach((d, i) =>
+    d.classList.toggle('on', i === tourIdx));
+  tourIdx++;
+  tourTimeout = setTimeout(nextTourStep, 3600);
+}
+
+// ── Sidebar build ───────────────────────────────────────────────────────────────
+function buildSidebar(objs) {
+  const list = document.getElementById('obj-list');
+  list.innerHTML = '';
+  tourDots.innerHTML = '';
+
+  for (const [name, obj] of Object.entries(objs)) {
+    const conf  = obj.reconstruction_confidence ?? 0;
+    const pct   = Math.round(conf * 100);
+    const cls   = conf > .7 ? 'g' : conf > .3 ? 'a' : 'r';
+    const prov  = obj.provenance ?? '';
+    const color = COLORS[name] || '#888';
+
+    const row = document.createElement('div');
+    row.className = 'obj-row';
+    row.id = 'or-' + name;
+    row.innerHTML = `
+      <div class="dot" style="background:${color}"></div>
+      <span class="name">${name}</span>
+      <span class="chip">${prov}</span>
+      <span class="badge ${cls}">${pct}%</span>
+    `;
+    row.onclick = () => { stopTour(); selectObj(name); };
+    list.appendChild(row);
+
+    // Floating label
+    const lbl = document.createElement('div');
+    lbl.className = 'lbl';
+    lbl.innerHTML = `<span style="color:${color}">●</span> ${name}`;
+    lbl.style.display = 'none';
+    lblLayer.appendChild(lbl);
+    lblEls[name] = lbl;
+
+    // Tour dot
+    const dot = document.createElement('div');
+    dot.className = 'tdot';
+    tourDots.appendChild(dot);
+  }
+
+  // Stats panel
+  const n    = Object.keys(objs).length;
+  const avg  = n ? (Object.values(objs)
+    .reduce((s, o) => s + (o.reconstruction_confidence ?? 0), 0) / n * 100).toFixed(0) : 0;
+  document.getElementById('stats').innerHTML = `
+    <div><strong>${n}</strong> objects detected</div>
+    <div>Avg confidence <strong>${avg}%</strong></div>
+    <div>Gaussians <strong>1.3 M</strong></div>
+    <div>Training views <strong>54</strong></div>
+  `;
+}
+
+// ── Fake progress bar ───────────────────────────────────────────────────────────
+let ldPct = 0;
+const ldTimer = setInterval(() => {
+  ldPct = Math.min(88, ldPct + (88 - ldPct) * 0.045 + 0.4);
+  ldBar.style.width = ldPct + '%';
+}, 180);
+
+function finishLoad() {
+  clearInterval(ldTimer);
+  ldBar.style.width = '100%';
+  ldMsg.textContent = 'Ready!';
+  setTimeout(() => {
+    document.getElementById('loading').classList.add('out');
+    setTimeout(() => document.getElementById('loading').remove(), 600);
+  }, 350);
+}
+
+function showError(msg) {
+  clearInterval(ldTimer);
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('err-msg').textContent = msg;
+  document.getElementById('err-box').classList.add('show');
+}
+
+// ── Resolve best available splat URL ────────────────────────────────────────────
+async function bestSplatUrl() {
+  for (const url of SPLAT_CANDIDATES) {
+    try {
+      const r = await fetch(url, { method: 'HEAD' });
+      if (r.ok) return url;
+    } catch (_) {}
+  }
+  return null;
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────────
+async function main() {
+  // Load object data (non-blocking — sidebar builds immediately)
+  ldMsg.textContent = 'Loading metadata…';
+  try {
+    objects = await fetch(OBJECTS_URL).then(r => r.json());
+    buildSidebar(objects);
+  } catch (e) {
+    console.warn('objects_3d.json not found — sidebar will be empty', e);
+  }
+
+  // Find splat file
+  ldMsg.textContent = 'Locating scene file…';
+  const splatUrl = await bestSplatUrl();
+  if (!splatUrl) {
+    showError('No scene file found.\n\nExpected one of:\n' + SPLAT_CANDIDATES.join('\n'));
+    return;
+  }
+
+  const isSplat   = splatUrl.endsWith('.splat');
+  const isPruned  = splatUrl.includes('_pruned');
+  const splatLabel = isPruned ? '1.3M splats (pruned)' : isSplat ? 'splat' : 'PLY';
+  ldMsg.textContent = `Loading ${splatLabel}…`;
+  document.getElementById('load-indicator').textContent = splatUrl.split('/').pop();
+
+  // Create viewer
+  viewer = new GS.Viewer({
+    cameraUp:              [0, -1, 0],
+    initialCameraPosition: HOME_POS,
+    initialCameraLookAt:   HOME_LOOK,
+    selfDrivenMode:        true,
+    useBuiltInControls:    true,
+    dynamicScene:          false,
+    webXRMode:             GS.WebXRMode.None,
+    renderMode:            GS.RenderMode.Always,
+  });
+
+  try {
+    await viewer.addSplatScene(splatUrl, {
+      splatAlphaRemovalThreshold: 5,
+      showLoadingUI: false,
+    });
+  } catch (err) {
+    showError(String(err));
+    return;
+  }
+
+  viewer.start();
+  finishLoad();
+
+  // ── Our overlay RAF: camera animation + label updates ──────────────────────
+  function overlayTick(now) {
+    requestAnimationFrame(overlayTick);
+    if (introPhase)      tickIntro(now);
+    else if (anim)       tickAnim(now);
+    updateLabels();
+  }
+  requestAnimationFrame(overlayTick);
+}
+
+// ── Resize ──────────────────────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  if (!cam()) return;
+  cam().aspect = window.innerWidth / window.innerHeight;
+  cam().updateProjectionMatrix();
+  viewer.renderer?.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ── Keyboard shortcut: T = tour, R = reset, Escape = deselect ─────────────────
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 't' || e.key === 'T') toggleTour();
+  if (e.key === 'r' || e.key === 'R') resetCam();
+  if (e.key === 'Escape') { stopTour(); selectObj(null); }
+});
+
+main().catch(err => showError(String(err)));
+</script>
+</body>
+</html>

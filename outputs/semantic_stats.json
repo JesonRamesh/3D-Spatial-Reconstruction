@@ -1,0 +1,47 @@
+{
+  "total_gaussians": 4348762,
+  "labeled": 628732,
+  "unlabeled": 3720030,
+  "classes": {
+    "bed": {
+      "count": 440056,
+      "pct": 10.12
+    },
+    "desk": {
+      "count": 21023,
+      "pct": 0.48
+    },
+    "chair": {
+      "count": 32119,
+      "pct": 0.74
+    },
+    "laptop": {
+      "count": 5309,
+      "pct": 0.12
+    },
+    "monitor": {
+      "count": 1845,
+      "pct": 0.04
+    },
+    "fan": {
+      "count": 2643,
+      "pct": 0.06
+    },
+    "lamp": {
+      "count": 1391,
+      "pct": 0.03
+    },
+    "shelf": {
+      "count": 90080,
+      "pct": 2.07
+    },
+    "door": {
+      "count": 33983,
+      "pct": 0.78
+    },
+    "window": {
+      "count": 283,
+      "pct": 0.01
+    }
+  }
+}
