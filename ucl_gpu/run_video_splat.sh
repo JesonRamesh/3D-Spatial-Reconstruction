@@ -113,8 +113,13 @@ fi
 N_FRAMES=$(ls "$FRAMES_DIR"/*.jpg | wc -l)
 echo "      Using $N_FRAMES frames (2fps × 158s)"
 
-# ── Run ns-process-data (COLMAP SfM) ──────────────────────────────────────────
+# ── Run COLMAP SfM directly (bypasses nerfstudio wrapper bug) ────────────────
 COLMAP_OUT="data/colmap_video"
+COLMAP_DB="$COLMAP_OUT/colmap.db"
+COLMAP_SPARSE="$COLMAP_OUT/sparse"
+
+# Make sure COLMAP from conda env is on PATH
+export PATH=/scratch0/jrameshs/colmap_env/bin:$PATH
 
 if [ -f "$COLMAP_OUT/transforms.json" ]; then
     N_REG=$(python3 -c "
@@ -131,14 +136,88 @@ else
     echo "      This takes 60-90 minutes."
     echo "      Started: $(date)"
 
-    ns-process-data images \
-        --data "$FRAMES_DIR" \
-        --output-dir "$COLMAP_OUT" \
-        --num-downscales 2 \
-        --matching-method exhaustive \
-        --verbose
+    mkdir -p "$COLMAP_SPARSE/0"
+
+    # Step 1: Feature extraction
+    echo "      [COLMAP 1/3] Extracting features..."
+    colmap feature_extractor \
+        --database_path "$COLMAP_DB" \
+        --image_path "$FRAMES_DIR" \
+        --ImageReader.single_camera 1 \
+        --ImageReader.camera_model SIMPLE_RADIAL \
+        --SiftExtraction.use_gpu 0
+
+    # Step 2: Exhaustive matching
+    echo "      [COLMAP 2/3] Matching features (exhaustive)..."
+    colmap exhaustive_matcher \
+        --database_path "$COLMAP_DB" \
+        --SiftMatching.use_gpu 0
+
+    # Step 3: Sparse reconstruction
+    echo "      [COLMAP 3/3] Running bundle adjustment..."
+    colmap mapper \
+        --database_path "$COLMAP_DB" \
+        --image_path "$FRAMES_DIR" \
+        --output_path "$COLMAP_SPARSE"
 
     echo "      COLMAP done: $(date)"
+
+    # Convert COLMAP output to nerfstudio transforms.json using pycolmap
+    echo "      Converting to nerfstudio format..."
+    python3 -c "
+import json, struct, numpy as np
+from pathlib import Path
+import pycolmap
+
+sparse_dir = Path('$COLMAP_SPARSE/0')
+recon = pycolmap.Reconstruction(str(sparse_dir))
+
+cameras = recon.cameras
+images = recon.images
+
+frames = []
+for img_id, img in images.items():
+    cam = cameras[img.camera_id]
+    # Get rotation and translation
+    R = img.rotation_matrix()
+    t = np.array(img.tvec)
+    # Build c2w matrix (nerfstudio convention)
+    c2w = np.eye(4)
+    c2w[:3,:3] = R.T
+    c2w[:3, 3] = -R.T @ t
+    # Flip axes to match nerfstudio convention
+    c2w[:,1] *= -1
+    c2w[:,2] *= -1
+    frames.append({
+        'file_path': 'images/' + img.name,
+        'transform_matrix': c2w.tolist()
+    })
+
+# Get intrinsics from first camera
+cam = list(cameras.values())[0]
+params = cam.params
+transforms = {
+    'fl_x': float(params[0]),
+    'fl_y': float(params[0]),
+    'cx': float(params[1]),
+    'cy': float(params[2]),
+    'w': cam.width,
+    'h': cam.height,
+    'camera_model': 'OPENCV',
+    'frames': frames
+}
+
+out = Path('$COLMAP_OUT/transforms.json')
+out.parent.mkdir(parents=True, exist_ok=True)
+with open(out, 'w') as f:
+    json.dump(transforms, f, indent=2)
+print(f'Wrote {len(frames)} frames to {out}')
+"
+
+    # Copy images dir into colmap_out for nerfstudio
+    if [ ! -d "$COLMAP_OUT/images" ]; then
+        ln -s "$(pwd)/$FRAMES_DIR" "$COLMAP_OUT/images"
+    fi
 
     # Quality check
     if [ -f "$COLMAP_OUT/transforms.json" ]; then
