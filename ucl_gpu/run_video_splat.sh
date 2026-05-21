@@ -1,3 +1,4 @@
+
 #!/bin/bash
 # =============================================================================
 # RoboScene+ — Plan A: Video → COLMAP → splatfacto
@@ -299,7 +300,7 @@ else
     ns-train splatfacto \
         --data "$COLMAP_OUT" \
         --output-dir "$OUTPUT_DIR" \
-        --max-num-iterations 30000 \
+        --max-num-iterations 40000 \
         --pipeline.model.cull-alpha-thresh 0.005 \
         --pipeline.model.densify-grad-thresh 0.0002 \
         --pipeline.model.use-scale-regularization True \
