@@ -241,6 +241,9 @@ import * as GS from
 const SPLAT_CANDIDATES = [
   '/outputs/scene_semantic_pruned.splat',
   '/outputs/scene_semantic.splat',
+  '/outputs/splat_video_v1/scene_pruned.splat',
+  '/outputs/splat_video_v1/scene.splat',
+  '/outputs/splat_video_v1/scene.ply',
   '/outputs/scene_semantic.ply',
 ];
 const OBJECTS_URL = '/outputs/objects_3d.json';
@@ -251,8 +254,8 @@ const COLORS = {
   door:'#DEB887', window:'#87CEEB',
 };
 
-const HOME_POS  = [-0.1, 0.0, 1.5];
-const HOME_LOOK = [ 0.0, 0.3, 0.5];
+const HOME_POS  = [-1.5,  0.0, 8.0];
+const HOME_LOOK = [-0.5, -1.5, 0.0];
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let viewer   = null;
@@ -323,8 +326,8 @@ window.resetCam = resetCam;
 
 // ── Intro orbit ─────────────────────────────────────────────────────────────────
 // Camera sweeps ~100° around the room center, then returns to home.
-const INTRO_CTR = new THREE.Vector3(0, 0.3, 0.5);
-const INTRO_R   = 1.7;
+const INTRO_CTR = new THREE.Vector3(-0.1, 0.0, 0.0);
+const INTRO_R   = 8.0;
 
 function tickIntro(now) {
   if (!cam()) return;
@@ -516,8 +519,8 @@ function buildSidebar(objs) {
   document.getElementById('stats').innerHTML = `
     <div><strong>${n}</strong> objects detected</div>
     <div>Avg confidence <strong>${avg}%</strong></div>
-    <div>Gaussians <strong>1.3 M</strong></div>
-    <div>Training views <strong>54</strong></div>
+    <div>Gaussians <strong>928 K</strong></div>
+    <div>Training views <strong>304</strong></div>
   `;
 }
 
@@ -583,7 +586,7 @@ async function main() {
 
   // Create viewer
   viewer = new GS.Viewer({
-    cameraUp:              [0, -1, 0],
+    cameraUp:              [0, 0, 1],
     initialCameraPosition: HOME_POS,
     initialCameraLookAt:   HOME_LOOK,
     selfDrivenMode:        true,
@@ -604,6 +607,21 @@ async function main() {
   }
 
   viewer.start();
+
+  // Speed up WASD movement — default is very slow for large scenes
+  if (viewer.controls) {
+    viewer.controls.movementSpeed = 2.0;
+    viewer.controls.keyboardMovementSpeed = 2.0;
+  }
+  // Also try after a short delay (controls may init async)
+  setTimeout(() => {
+    if (viewer.controls) {
+      viewer.controls.movementSpeed = 2.0;
+      viewer.controls.keyboardMovementSpeed = 2.0;
+      if (viewer.controls.zoomSpeed !== undefined) viewer.controls.zoomSpeed = 3.0;
+    }
+  }, 1000);
+
   finishLoad();
 
   // ── Our overlay RAF: camera animation + label updates ──────────────────────

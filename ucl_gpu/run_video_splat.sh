@@ -255,29 +255,62 @@ print(len(d.get('frames', [])))
     fi
 fi
 
-# ── Train splatfacto ──────────────────────────────────────────────────────────
-OUTPUT_PLY="outputs/splat_video_v1/scene.ply"
+# ── Generate point cloud PLY from COLMAP for initialisation ───────────────────
+POINTS_PLY="$COLMAP_SPARSE/0/points3D.ply"
+
+if [ -f "$POINTS_PLY" ]; then
+    echo "[4b/5] Point cloud PLY already exists. Skipping."
+else
+    echo "[4b/5] Converting COLMAP points to PLY for Gaussian initialisation..."
+    python3 -c "
+import pycolmap, numpy as np
+from plyfile import PlyData, PlyElement
+from pathlib import Path
+
+recon = pycolmap.Reconstruction('$COLMAP_SPARSE/0')
+pts = np.array([[p.xyz[0], p.xyz[1], p.xyz[2]] for p in recon.points3D.values()])
+rgb = np.array([[int(p.color[0]), int(p.color[1]), int(p.color[2])] for p in recon.points3D.values()])
+vertex = np.zeros(len(pts), dtype=[
+    ('x','f4'),('y','f4'),('z','f4'),
+    ('red','u1'),('green','u1'),('blue','u1')
+])
+vertex['x'],vertex['y'],vertex['z'] = pts[:,0],pts[:,1],pts[:,2]
+vertex['red'],vertex['green'],vertex['blue'] = rgb[:,0],rgb[:,1],rgb[:,2]
+PlyData([PlyElement.describe(vertex,'vertex')]).write('$POINTS_PLY')
+print(f'Saved {len(pts)} seed points to $POINTS_PLY')
+"
+fi
+
+# ── Train splatfacto v2 (with point cloud init + scale regularisation) ────────
+OUTPUT_DIR="outputs/splat_video_v2"
+OUTPUT_PLY="$OUTPUT_DIR/scene.ply"
 
 if [ -f "$OUTPUT_PLY" ]; then
     echo "[5/5] scene.ply already exists. Skipping training."
 else
-    echo "[5/5] Training splatfacto (30,000 steps)…"
+    echo "[5/5] Training splatfacto v2 (30,000 steps, point cloud init)…"
+    echo "      Key improvements over v1:"
+    echo "        - Initialised from 64K COLMAP points (not random)"
+    echo "        - Scale regularisation stops Gaussians growing outside room"
+    echo "        - Tighter cull threshold removes floaters during training"
     echo "      Expected: 1.5-2 hours"
     echo "      Started: $(date)"
 
     ns-train splatfacto \
         --data "$COLMAP_OUT" \
-        --output-dir "outputs/splat_video_v1" \
+        --output-dir "$OUTPUT_DIR" \
         --max-num-iterations 30000 \
         --pipeline.model.cull-alpha-thresh 0.005 \
         --pipeline.model.densify-grad-thresh 0.0002 \
+        --pipeline.model.use-scale-regularization True \
+        --pipeline.model.max-gauss-ratio 10.0 \
         --viewer.quit-on-train-completion True
 
     echo "      Training done: $(date)"
 
     # Find and copy the output PLY
-    LATEST_PLY=$(find "outputs/splat_video_v1" -name "*.ply" 2>/dev/null | sort | tail -1)
-    if [ -n "$LATEST_PLY" ] && [ "$LATEST_PLY" != "$OUTPUT_PLY" ]; then
+    LATEST_PLY=$(find "$OUTPUT_DIR" -name "*.ply" 2>/dev/null | grep -v points3D | sort | tail -1)
+    if [ -n "$LATEST_PLY" ]; then
         cp "$LATEST_PLY" "$OUTPUT_PLY"
         echo "      Copied $(basename $LATEST_PLY) → $OUTPUT_PLY"
     fi
@@ -295,25 +328,24 @@ if [ -f "$OUTPUT_PLY" ]; then
     echo "  ✅ scene.ply: $OUTPUT_PLY ($SIZE)"
 else
     echo "  ⚠️  scene.ply not found — check training log above"
-    find outputs/splat_video_v1 -name "*.ply" 2>/dev/null
+    find outputs/splat_video_v2 -name "*.ply" 2>/dev/null
 fi
 
 echo ""
 echo "  Download to Mac (run from Mac terminal):"
 echo ""
-echo "  # Splat (for viewer)"
-echo "  scp -r -J jrameshs@knuckles.cs.ucl.ac.uk \\"
-echo "    jrameshs@bluestreak.cs.ucl.ac.uk:${PROJECT_DIR}/outputs/splat_video_v1/ \\"
-echo "    ~/3D-Spatial-Reconstruction/outputs/splat_video_v1/"
+echo "  # Splat v2 (cleaner, point-cloud initialised)"
+echo "  scp -J jrameshs@knuckles.cs.ucl.ac.uk \\"
+echo "    jrameshs@bluestreak.cs.ucl.ac.uk:${PROJECT_DIR}/outputs/splat_video_v2/scene.ply \\"
+echo "    ~/Downloads/3D-Spatial-Reconstruction/outputs/splat_video_v2/scene.ply"
 echo ""
-echo "  # COLMAP poses (for semantic reprojection)"
+echo "  # COLMAP sparse (for semantic reprojection)"
 echo "  scp -r -J jrameshs@knuckles.cs.ucl.ac.uk \\"
-echo "    jrameshs@bluestreak.cs.ucl.ac.uk:${PROJECT_DIR}/data/colmap_video/ \\"
-echo "    ~/3D-Spatial-Reconstruction/data/colmap_video/"
+echo "    jrameshs@bluestreak.cs.ucl.ac.uk:${PROJECT_DIR}/data/colmap_video/sparse/ \\"
+echo "    ~/Downloads/3D-Spatial-Reconstruction/data/colmap_video/sparse/"
 echo ""
 echo "  After downloading, on Mac:"
-echo "  1. python scripts/convert_to_splat.py --input outputs/splat_video_v1/scene.ply"
-echo "  2. python scripts/prune_splat.py --input outputs/splat_video_v1/scene.splat"
-echo "  3. python scripts/paint_semantic_gaussians.py --cameras_bin data/colmap_video/sparse/0/cameras.bin --images_bin data/colmap_video/sparse/0/images.bin"
-echo "  4. python open_viewer.py"
+echo "  1. python scripts/convert_to_splat.py --input outputs/splat_video_v2/scene.ply --output outputs/splat_video_v2/scene.splat"
+echo "  2. python scripts/prune_splat.py --input outputs/splat_video_v2/scene.splat --output outputs/splat_video_v2/scene_pruned.splat --alpha_min 80 --crop -3.5,-1.5,-3.0,3.5,1.5,3.5"
+echo "  3. python open_viewer.py"
 echo "========================================"
