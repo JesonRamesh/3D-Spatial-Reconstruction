@@ -334,12 +334,15 @@ else
     echo "      Expected: 2.5-3 hours"
     echo "      Started: $(date)"
 
+    # Set expandable segments to reduce CUDA memory fragmentation
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
     ns-train splatfacto \
         --data "$COLMAP_OUT" \
         --output-dir "$OUTPUT_DIR" \
         --max-num-iterations 60000 \
         --pipeline.model.cull-alpha-thresh 0.005 \
-        --pipeline.model.densify-grad-thresh 0.0001 \
+        --pipeline.model.densify-grad-thresh 0.0002 \
         --pipeline.model.use-scale-regularization True \
         --pipeline.model.max-gauss-ratio 10.0 \
         --viewer.quit-on-train-completion True
