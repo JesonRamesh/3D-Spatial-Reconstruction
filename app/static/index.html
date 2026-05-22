@@ -239,11 +239,14 @@ import * as GS from
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 const SPLAT_CANDIDATES = [
+  '/outputs/splat_video_v2/scene_room_clean.splat',
+  '/outputs/splat_video_v2/scene_full.splat',
+  '/outputs/splat_video_v2/scene_pruned.splat',
+  '/outputs/splat_video_v2/scene.splat',
   '/outputs/scene_semantic_pruned.splat',
   '/outputs/scene_semantic.splat',
   '/outputs/splat_video_v1/scene_pruned.splat',
   '/outputs/splat_video_v1/scene.splat',
-  '/outputs/splat_video_v1/scene.ply',
   '/outputs/scene_semantic.ply',
 ];
 const OBJECTS_URL = '/outputs/objects_3d.json';
@@ -254,8 +257,8 @@ const COLORS = {
   door:'#DEB887', window:'#87CEEB',
 };
 
-const HOME_POS  = [-1.5,  0.0, 8.0];
-const HOME_LOOK = [-0.5, -1.5, 0.0];
+const HOME_POS  = [-0.03,  0.30,  1.5];
+const HOME_LOOK = [-0.03,  0.30, -0.55];
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let viewer   = null;
@@ -326,8 +329,8 @@ window.resetCam = resetCam;
 
 // ── Intro orbit ─────────────────────────────────────────────────────────────────
 // Camera sweeps ~100° around the room center, then returns to home.
-const INTRO_CTR = new THREE.Vector3(-0.1, 0.0, 0.0);
-const INTRO_R   = 8.0;
+const INTRO_CTR = new THREE.Vector3(-0.03, 0.30, -0.55);
+const INTRO_R   = 2.0;
 
 function tickIntro(now) {
   if (!cam()) return;
@@ -519,7 +522,7 @@ function buildSidebar(objs) {
   document.getElementById('stats').innerHTML = `
     <div><strong>${n}</strong> objects detected</div>
     <div>Avg confidence <strong>${avg}%</strong></div>
-    <div>Gaussians <strong>928 K</strong></div>
+    <div>Gaussians <strong>768 K</strong></div>
     <div>Training views <strong>304</strong></div>
   `;
 }
