@@ -342,7 +342,6 @@ else
         --pipeline.model.densify-grad-thresh 0.0001 \
         --pipeline.model.use-scale-regularization True \
         --pipeline.model.max-gauss-ratio 10.0 \
-        --pipeline.model.densify-until-iter 50000 \
         --viewer.quit-on-train-completion True
 
     echo "      Training done: $(date)"
