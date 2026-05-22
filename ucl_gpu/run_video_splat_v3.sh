@@ -147,6 +147,8 @@ else
     echo "      Method: exhaustive matching (best for <600 frames)"
     echo "      Started: $(date)"
 
+    # Wipe any stale DB from a previous failed run
+    rm -f "$COLMAP_DB"
     mkdir -p "$COLMAP_SPARSE/0"
 
     # Step 1: Feature extraction
@@ -158,10 +160,17 @@ else
         --ImageReader.camera_model SIMPLE_RADIAL \
         --SiftExtraction.use_gpu 0
 
-    # Step 2: Exhaustive matching
-    echo "      [COLMAP 2/3] Exhaustive feature matching..."
-    colmap exhaustive_matcher \
+    # Step 2: Sequential matching (correct for video — finds neighbours by filename order)
+    echo "      [COLMAP 2/3] Sequential feature matching (video-optimised)..."
+    colmap sequential_matcher \
         --database_path "$COLMAP_DB" \
+        --SequentialMatching.overlap 10 \
+        --SequentialMatching.loop_detection 1 \
+        --SequentialMatching.vocab_tree_path /scratch0/jrameshs/colmap_env/share/colmap/vocab_tree_flickr100K_words32K.bin \
+        --SiftMatching.use_gpu 0 || \
+    colmap sequential_matcher \
+        --database_path "$COLMAP_DB" \
+        --SequentialMatching.overlap 10 \
         --SiftMatching.use_gpu 0
 
     # Step 3: Sparse reconstruction
@@ -185,11 +194,34 @@ recon = pycolmap.Reconstruction(str(sparse_dir))
 cameras = recon.cameras
 images = recon.images
 
+def get_Rt(img):
+    # Support both old and new pycolmap APIs
+    try:
+        # pycolmap >= 0.6
+        pose = img.cam_from_world
+        if callable(pose):
+            pose = pose()
+        R = np.array(pose.rotation.matrix())
+        t = np.array(pose.translation)
+    except AttributeError:
+        try:
+            # pycolmap 0.4-0.5
+            R = np.array(img.rotation_matrix())
+            t = np.array(img.tvec)
+        except AttributeError:
+            # fallback: read qvec/tvec directly
+            qw,qx,qy,qz = img.qvec
+            R = np.array([
+                [1-2*(qy*qy+qz*qz), 2*(qx*qy-qz*qw), 2*(qx*qz+qy*qw)],
+                [2*(qx*qy+qz*qw), 1-2*(qx*qx+qz*qz), 2*(qy*qz-qx*qw)],
+                [2*(qx*qz-qy*qw), 2*(qy*qz+qx*qw), 1-2*(qx*qx+qy*qy)]
+            ])
+            t = np.array(img.tvec)
+    return R, t
+
 frames = []
 for img_id, img in images.items():
-    cam = cameras[img.camera_id]
-    R = img.rotation_matrix()
-    t = np.array(img.tvec)
+    R, t = get_Rt(img)
     c2w = np.eye(4)
     c2w[:3,:3] = R.T
     c2w[:3, 3] = -R.T @ t
