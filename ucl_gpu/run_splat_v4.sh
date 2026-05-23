@@ -135,19 +135,81 @@ else
     cp "$COLMAP_V3/sparse/0/images.bin"   "$COLMAP_V4/colmap/sparse/0/"
     cp "$COLMAP_V3/sparse/0/points3D.bin" "$COLMAP_V4/colmap/sparse/0/"
 
+    # nerfstudio 1.1.5: --orientation-method not available in ns-process-data.
+    # Run ns-process-data without orientation flags, then apply Y-up alignment
+    # directly to transforms.json using nerfstudio's camera_utils logic.
     ns-process-data images \
         --data "$FRAMES_DIR" \
         --output-dir "$COLMAP_V4" \
         --skip-colmap \
         --colmap-model-path "$COLMAP_V4/colmap/sparse/0" \
-        --orientation-method up \
-        --auto-scale-poses \
-        --matching-method exhaustive \
         --no-gpu
 
     echo "      ns-process-data done: $(date)"
+    echo "      Applying Y-up orientation alignment to transforms.json ..."
 
-    # Verify Y-up alignment
+    python3 << 'PYEOF'
+import json, numpy as np
+from pathlib import Path
+
+tfm_path = Path('data/colmap_v4/transforms.json')
+with open(tfm_path) as f:
+    tfm = json.load(f)
+
+frames = tfm['frames']
+c2ws = np.array([f['transform_matrix'] for f in frames], dtype=np.float64)
+
+# Compute mean camera up-vector (col1 of c2w = camera Y = up in OpenGL)
+ups = c2ws[:, :3, 1]
+mean_up = ups.mean(axis=0)
+mean_up /= np.linalg.norm(mean_up)
+
+def rotation_between(a, b):
+    a = np.array(a) / np.linalg.norm(a)
+    b = np.array(b) / np.linalg.norm(b)
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    s = np.linalg.norm(v)
+    if s < 1e-8:
+        return np.eye(3)
+    v /= s
+    K = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
+    return np.eye(3) + s*K + (1-c)*(K@K)
+
+R_orient = rotation_between(mean_up, [0.0, 1.0, 0.0])
+R4 = np.eye(4); R4[:3,:3] = R_orient
+
+# Apply rotation, center, and scale
+c2ws_rot = (R4[None] @ c2ws)
+cam_positions = c2ws_rot[:, :3, 3]
+center = cam_positions.mean(axis=0)
+c2ws_rot[:, :3, 3] -= center
+max_val = np.abs(c2ws_rot[:, :3, 3]).max()
+scale = 1.0 / max_val if max_val > 0 else 1.0
+c2ws_rot[:, :3, 3] *= scale
+
+for i, frame in enumerate(frames):
+    frame['transform_matrix'] = c2ws_rot[i].tolist()
+tfm['applied_transform_yup'] = R4.tolist()
+tfm['applied_scale_yup'] = float(scale)
+with open(tfm_path, 'w') as f:
+    json.dump(tfm, f, indent=2)
+
+# Verify alignment
+ups_new = c2ws_rot[:, :3, 1]
+mean_up_new = ups_new.mean(axis=0); mean_up_new /= np.linalg.norm(mean_up_new)
+dot = float(abs(np.dot(mean_up_new, [0,1,0])))
+print(f'  Original mean UP : {mean_up}')
+print(f'  Aligned mean UP  : {mean_up_new}')
+print(f'  Dot with [0,1,0] : {dot:.4f}  (target > 0.95)')
+if dot > 0.95:
+    print('  SUCCESS: Y-UP ALIGNMENT CONFIRMED -- orbit will work correctly')
+else:
+    print(f'  WARNING: weak alignment ({dot:.3f})')
+print(f'  Written {len(frames)} Y-up frames to {tfm_path}')
+PYEOF
+
+    # Verify Y-up alignment (summary)
     python3 - <<'PYEOF'
 import json, numpy as np
 with open('data/colmap_v4/transforms.json') as f:
