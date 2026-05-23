@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RoboScene+ — 3D Room Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0a;
+      color: #fff;
+      font-family: system-ui, -apple-system, sans-serif;
+      overflow: hidden;
+    }
+
+    #ui {
+      position: fixed; top: 16px; left: 16px; z-index: 10;
+      background: rgba(0,0,0,0.65);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px; padding: 14px 18px;
+      backdrop-filter: blur(10px);
+      font-size: 13px; line-height: 1.7;
+      max-width: 240px;
+      display: none;
+    }
+    #ui h1 { font-size: 15px; font-weight: 700; margin-bottom: 6px; letter-spacing: 0.03em; }
+    #ui .hint { color: #999; font-size: 11px; margin-bottom: 10px; }
+
+    #toggle-btn {
+      display: block; width: 100%; padding: 7px 12px;
+      background: rgba(127,119,221,0.15);
+      border: 1px solid rgba(127,119,221,0.4);
+      border-radius: 6px; color: #c5c0ff;
+      cursor: pointer; font-size: 12px; font-family: inherit;
+      transition: background 0.18s;
+    }
+    #toggle-btn:hover { background: rgba(127,119,221,0.3); }
+
+    #mode-badge {
+      display: inline-block; margin-top: 8px;
+      font-size: 10px; color: #888;
+      letter-spacing: 0.05em; text-transform: uppercase;
+    }
+
+    #loading {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center; z-index: 20;
+    }
+    #loading .icon { font-size: 40px; margin-bottom: 14px;
+      animation: pulse 1.8s ease-in-out infinite; }
+    #loading .title { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+    #loading .sub { color: #777; font-size: 13px; margin-bottom: 22px; }
+    #bar-wrap { width: 260px; height: 3px; background: #222; border-radius: 2px; overflow: hidden; margin: 0 auto; }
+    #bar { height: 100%; width: 0%; background: #7f77dd; border-radius: 2px; transition: width 0.2s; }
+    #ld-msg { margin-top: 10px; font-size: 11px; color: #666; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+    #error {
+      display: none;
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: #180808; border: 1px solid #6b2020;
+      border-radius: 10px; padding: 24px 30px;
+      max-width: 440px; text-align: center;
+      font-size: 13px; color: #f87171; z-index: 30;
+    }
+    #error b { font-size: 15px; }
+    #error code { font-size: 11px; color: #aaa; display: block; margin-top: 10px; }
+  </style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="icon">⬡</div>
+  <div class="title">RoboScene+</div>
+  <div class="sub">3D Gaussian Splatting · Bedroom Reconstruction</div>
+  <div id="bar-wrap"><div id="bar"></div></div>
+  <div id="ld-msg">Initialising…</div>
+</div>
+
+<div id="ui">
+  <h1>⬡ RoboScene+</h1>
+  <div class="hint">Drag to orbit · Scroll to zoom · Right-drag to pan</div>
+  <button id="toggle-btn" onclick="toggleView()">Switch to semantic view</button>
+  <span id="mode-badge">Base view</span>
+</div>
+
+<div id="error"></div>
+
+<script type="module">
+  import * as SPLAT from 'https://cdn.jsdelivr.net/npm/gsplat@latest/dist/index.js';
+
+  // ── Config ─────────────────────────────────────────────────────────────────
+  // Files are served from HF Dataset repo via resolve/main CDN URL.
+  // Replace jrameshs with your actual HF username if different.
+  const HF_BASE = 'https://huggingface.co/datasets/jrameshs/roboscene-data/resolve/main/';
+
+  const URLS = {
+    base:     HF_BASE + 'scene_yup.splat',
+    semantic: HF_BASE + 'scene_semantic_v3.splat',
+  };
+
+  // ── DOM refs ───────────────────────────────────────────────────────────────
+  const loadingEl = document.getElementById('loading');
+  const barEl     = document.getElementById('bar');
+  const ldMsgEl   = document.getElementById('ld-msg');
+  const uiEl      = document.getElementById('ui');
+  const errorEl   = document.getElementById('error');
+  const btnEl     = document.getElementById('toggle-btn');
+  const badgeEl   = document.getElementById('mode-badge');
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let currentMode = 'base';
+  let scene, camera, controls, renderer;
+  let animId = null;
+
+  // ── Progress bar trickle ───────────────────────────────────────────────────
+  let fakePct = 0;
+  const fakeTimer = setInterval(() => {
+    fakePct = Math.min(85, fakePct + (85 - fakePct) * 0.04 + 0.3);
+    barEl.style.width = fakePct + '%';
+  }, 200);
+
+  function finishLoad() {
+    clearInterval(fakeTimer);
+    barEl.style.width = '100%';
+    ldMsgEl.textContent = 'Ready!';
+    setTimeout(() => {
+      loadingEl.style.transition = 'opacity 0.4s';
+      loadingEl.style.opacity = '0';
+      setTimeout(() => { loadingEl.style.display = 'none'; }, 420);
+      uiEl.style.display = 'block';
+    }, 300);
+  }
+
+  function showError(msg) {
+    clearInterval(fakeTimer);
+    loadingEl.style.display = 'none';
+    errorEl.style.display = 'block';
+    errorEl.innerHTML = `<b>Failed to load scene</b><br><br>${msg}
+      <code>Check browser console for details.</code>`;
+  }
+
+  // ── Load a splat URL into the scene ───────────────────────────────────────
+  async function loadSplat(url) {
+    ldMsgEl.textContent = 'Downloading scene…';
+    loadingEl.style.display = 'block';
+    loadingEl.style.opacity = '1';
+    fakePct = 0;
+
+    // Clear existing scene
+    if (animId) { cancelAnimationFrame(animId); animId = null; }
+    scene = new SPLAT.Scene();
+
+    try {
+      await SPLAT.PLYLoader.LoadAsync(url, scene, (p) => {
+        const pct = Math.round(p * 100);
+        barEl.style.width = pct + '%';
+        ldMsgEl.textContent = `Downloading… ${pct}%`;
+      });
+    } catch (err) {
+      showError(String(err));
+      return false;
+    }
+
+    finishLoad();
+    startRenderLoop();
+    return true;
+  }
+
+  // ── Render loop ────────────────────────────────────────────────────────────
+  function startRenderLoop() {
+    function frame() {
+      animId = requestAnimationFrame(frame);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    frame();
+  }
+
+  // ── Toggle between base and semantic views ─────────────────────────────────
+  window.toggleView = async function () {
+    btnEl.disabled = true;
+    if (currentMode === 'base') {
+      currentMode = 'semantic';
+      btnEl.textContent = 'Switch to base view';
+      badgeEl.textContent = 'Semantic view';
+    } else {
+      currentMode = 'base';
+      btnEl.textContent = 'Switch to semantic view';
+      badgeEl.textContent = 'Base view';
+    }
+    await loadSplat(URLS[currentMode]);
+    btnEl.disabled = false;
+  };
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+  async function init() {
+    renderer = new SPLAT.WebGLRenderer();
+    renderer.canvas.style.cssText =
+      'position:fixed;top:0;left:0;width:100vw;height:100vh;';
+    document.body.prepend(renderer.canvas);
+
+    camera   = new SPLAT.Camera();
+    controls = new SPLAT.OrbitControls(camera, renderer.canvas);
+
+    // Handle window resize
+    window.addEventListener('resize', () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix?.();
+    });
+
+    ldMsgEl.textContent = 'Loading scene…';
+    await loadSplat(URLS.base);
+  }
+
+  init().catch(err => showError(String(err)));
+</script>
+
+</body>
+</html>

@@ -247,12 +247,18 @@ source /usr/local/cuda/CUDA_VISIBILITY.csh   # restrict to 1 GPU (etiquette)
 | 2 | VGGT reconstruction | ✅ | ✅ DONE — 511 poses, depth maps in data/vggt_out/ |
 | 3 | Gaussian Splatting | ✅ | ✅ DONE — MASt3R-SLAM + nerfstudio splatfacto 60k steps |
 | 4 | Grounded SAM2 | ✅ | ✅ DONE — 317 frames, 10 objects, outputs/semantic/ |
-| 5 | 3D semantic lifting | ❌ | ✅ DONE — outputs/objects_3d.json (10 objects + bboxes) |
-| 6 | Confidence map ★ | ❌ | ✅ DONE — confidence_map.npy + navigability_map.png + tagged splat |
+| 5 | 3D semantic lifting | ❌ | ✅ DONE (needs bbox fix — see PLAN.md §4 Day 4) |
+| 6 | Confidence map ★ | ❌ | ✅ DONE — confidence_map.npy + tagged splat |
 | 7 | Dead zone completion | ❌ | ✅ DONE — outputs/dead_zones/ (LaMa inpainting) |
-| 8 | Scene graph + Claude API | ❌ | ⬜ TODO |
-| 9 | Gradio app + deploy | ❌ | ⬜ TODO |
-| 10 | README + polish | ❌ | ⬜ TODO |
+| 8 | Scene graph + Claude API | ❌ | ✅ DONE — outputs/scene_graph.json + query_scene.py working |
+| A | Semantic Gaussian painting | ❌ | ✅ DONE — outputs/scene_semantic.ply (628K/4.35M labeled) |
+| B | 3D viewer HTML | ❌ | ✅ DONE — app/static/viewer.html (GaussianSplats3D.js) |
+| C | Gradio app overhaul | ❌ | ✅ DONE — Tab 1 = 3D viewer (background file server) |
+| V | Viewer fix + splat pruning | ❌ | ✅ DONE — 41MB pruned splat, no double-download |
+| G | Re-train on raw_images/ (GPU) | ✅ | ⬜ TODO — ucl_gpu/run_colmap_splat.sh |
+| D | Fix object bounding boxes | ❌ | ⬜ TODO — re-run lift_semantics_3d.py with tighter filters |
+| E | HF Spaces deployment | ❌ | ⬜ TODO |
+| F | README + polish | ❌ | ⬜ TODO |
 
 ---
 
@@ -301,30 +307,26 @@ python3 scripts/complete_dead_zones.py \
 
 ---
 
-## Immediate Next Action — Session 7: Dead Zone Completion (Mac, no GPU)
+## ⚠️ IMPORTANT: Project Direction Change (Read PLAN.md)
 
-All inputs are ready locally:
-- `outputs/confidence_map.npy` — voxel confidence grid ✅
-- `outputs/confidence_metadata.json` — grid origin + shape ✅  
-- `outputs/splat_mast3r_v2/scene.ply` — Gaussian splat ✅
+The project goal is a **navigable 3D semantic viewer**, not a 2D confidence map.
+See `PLAN.md` for root cause analysis and the corrected 7-day plan.
 
-```bash
-# Install deps first:
-pip3 install simple-lama-inpainting scipy
+## Immediate Next Action — Session A: Semantic Gaussian Painting (Mac, no GPU)
 
-# Run:
-python scripts/complete_dead_zones.py \
-  --confidence_map outputs/confidence_map.npy \
-  --metadata outputs/confidence_metadata.json \
-  --splat_ply outputs/splat_mast3r_v2/scene.ply \
-  --output_dir outputs/
-```
+All inputs ready locally:
+- `outputs/splat_mast3r_v2/scene.ply` — 4.35M Gaussians ✅
+- `outputs/semantic/frame_XXXX.json` — 317 semantic masks ✅
+- `data/mast3r_out/sparse/0/cameras.bin` + `images.bin` — COLMAP poses ✅
 
-Expected outputs:
-- `outputs/dead_zones/dz_0_inpainted.png` … `dz_4_inpainted.png`
-- `outputs/dead_zone_report.json`
+Write and run `scripts/paint_semantic_gaussians.py` (see PLAN.md §4 Day 1–2).
+Output: `outputs/scene_semantic.ply` — Gaussians colored by semantic class.
 
-Then move to Session 8 (Scene Graph + Claude API query).
+Then:
+1. Create `app/static/viewer.html` using GaussianSplats3D.js
+2. Overhaul `app/app.py` — Tab 1 = interactive 3D viewer
+3. Fix object bounding boxes (lift_semantics_3d.py, n_std=1.5)
+4. Deploy to HF Spaces
 
 ---
 
@@ -493,6 +495,128 @@ Read CLAUDE.md. Session 7: write scripts/complete_dead_zones.py:
 3. Save outputs/dead_zone_report.json:
    {num_dead_zones, total_dead_volume_m3, zones:[...]}
 NOTE: Back-projection into new Gaussians = Future Work in README.
+```
+
+### Session A — Semantic Gaussian Painting (NEW — replaces planned Session 8 visual output)
+```
+Read CLAUDE.md and PLAN.md. Session A: write scripts/paint_semantic_gaussians.py.
+
+Goal: color every Gaussian in outputs/splat_mast3r_v2/scene.ply by its semantic
+class so the 3D viewer shows a highlighted bedroom.
+
+1. Load scene.ply using a pure-numpy PLY reader (same pattern as lift_semantics_3d.py).
+   Extract: x, y, z, f_dc_0, f_dc_1, f_dc_2 for all 4.35M Gaussians.
+   Keep ALL other property columns unchanged.
+
+2. Load COLMAP cameras.bin + images.bin from data/mast3r_out/sparse/0/
+   using colmap_utils.read_cameras_binary() and read_images_binary().
+   Build map: image_name (e.g. "frame_0001.jpg") → (R_w2c, t_w2c, K)
+   where K = [[fx,0,cx],[0,fy,cy],[0,0,1]].
+
+3. Define class color map (consistent with existing codebase):
+   {bed:#FFB6C1, desk:#20B2AA, chair:#4682B4, laptop:#6495ED,
+    monitor:#2F4F4F, fan:#FF6347, lamp:#FFD700, shelf:#CD853F,
+    door:#DEB887, window:#87CEEB}
+   Build label→index mapping, index→RGB array.
+
+4. Allocate votes array: shape (N_gaussians, n_classes+1) int32 (+1 for unlabeled).
+
+5. For each frame in outputs/semantic/ with a matching camera pose:
+   a. Load JSON → build semantic label image (H×W uint8, 0=unlabeled, 1..n=class index)
+      Using all object masks, later masks overwrite earlier (same as debug PNG logic).
+      Decode RLE masks using pycocotools.
+   b. Project all Gaussians vectorized (no Python loop over Gaussians):
+      p_cam = (R_w2c @ P.T).T + t_w2c   # N×3
+      in_front = p_cam[:,2] > 0.01
+      u = fx * p_cam[:,0]/p_cam[:,2] + cx
+      v = fy * p_cam[:,1]/p_cam[:,2] + cy
+      in_img = in_front & (u>=0)&(u<W)&(v>=0)&(v<H)
+   c. For Gaussians in_img: look up label from semantic_image[v_int, u_int].
+      Vectorize with np.add.at(votes, (valid_idxs, labels[valid_idxs]), 1).
+
+6. Assign semantic class: cls = argmax(votes, axis=1) where votes.max > 0.
+
+7. Apply semantic colors:
+   SH_C0 = 0.28209479177387814
+   For labeled Gaussians: f_dc = (class_rgb - 0.5) / SH_C0
+   Zero out f_rest_* columns for labeled Gaussians (view-independent color).
+   For unlabeled Gaussians: multiply f_dc by 0.25 (grey them out).
+
+8. Write outputs/scene_semantic.ply in same binary format as input.
+   Also write outputs/semantic_stats.json: per-class Gaussian count + %.
+
+Args: --splat_ply, --semantic_dir, --cameras_bin, --images_bin, --output_ply,
+      --max_frames (default all), --min_votes (default 2).
+
+Print: frames processed, % Gaussians labeled, per-class counts.
+```
+
+### Session B — 3D Viewer + App Overhaul (NEW)
+```
+Read CLAUDE.md and PLAN.md. Session B: create the 3D viewer and overhaul app/app.py.
+
+Part A — app/static/viewer.html:
+Create a minimal HTML file using GaussianSplats3D.js from CDN:
+  https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/build/gaussian-splats-3d.module.min.js
+
+The HTML must:
+1. Fill the entire iframe viewport with a dark background (#0f0f1a).
+2. Load a .ply file whose URL is passed as a query parameter:
+   ?ply=<url_encoded_path>
+   Default to ./scene_semantic.ply if no parameter.
+3. Use GaussianSplats3D.Viewer with cameraUp=[0,-1,0],
+   initialCameraPosition=[0,0.5,3], selfDrivenMode=true.
+4. Show a top-left legend panel with the 10 semantic class colors.
+5. Show bottom-right text: "WASD + drag to navigate | Scroll to zoom".
+6. No external fonts or heavy dependencies beyond the three.js importmap.
+
+Part B — app/app.py overhaul:
+Tab 1 "🔍 3D Scene Viewer" (PRIMARY):
+  - gr.HTML of an <iframe> pointing to viewer.html served from app/static/
+  - Two gr.Button side by side: "Semantic View" and "Appearance View"
+    clicking switches the iframe src URL between scene_semantic.ply and scene.ply
+  - Below: object legend (gr.Markdown) showing class colors + names
+  - Below: compact room summary (keep existing build_room_summary())
+
+Tab 2 "📊 Object Map": Keep existing dataframe and dead zone section.
+
+Tab 3 "🤖 Robot Query": Keep unchanged.
+
+Tab 4 "⚙️ Pipeline": Keep unchanged.
+
+For the iframe src: Gradio serves files in app/ directory when passed to
+  allowed_paths in app.launch(). Use:
+  allowed_paths=[str(Path(__file__).parent), str(ROOT/"outputs")]
+
+The iframe src should be:
+  "/gradio_api/file=app/static/viewer.html?ply=/gradio_api/file=outputs/scene_semantic.ply"
+  (or equivalent Gradio static file URL format for the installed version).
+
+Fallback: if scene_semantic.ply not found, load scene.ply (appearance only).
+```
+
+### Session C — Fix Object Bounding Boxes (NEW)
+```
+Read CLAUDE.md and PLAN.md. Session C: fix lift_semantics_3d.py and regenerate outputs.
+
+Changes to scripts/lift_semantics_3d.py:
+1. Change remove_outliers: use n_std=1.5 (was 2.0).
+   For objects with >50k points use n_std=1.2.
+
+2. Add volume sanity filter: after outlier removal, if computed volume > 3.0 m³
+   AND label not in {"bed", "sofa", "wardrobe", "couch"}:
+   trim to points within 85th-percentile radius from centroid, recompute.
+
+3. Add confidence filter: only lift pixels where the frame JSON has confidence > 0.35
+   for the detected object (already stored in semantic JSON per label).
+
+4. For structural classes {"window", "door", "wall"}: skip bounding box, use
+   centroid ± 0.25m as placeholder bbox. These cannot be accurately bounded.
+
+Run: python scripts/lift_semantics_3d.py (uses default paths from CLAUDE.md).
+Verify: desk volume ~0.3–1.0 m³, monitor ~0.05–0.2 m³, window volume flagged as structural.
+
+Then run: python scripts/build_scene_graph.py to update outputs/scene_graph.json.
 ```
 
 ### Session 8 — Scene Graph + Claude API

@@ -42,6 +42,8 @@ except ImportError:
     HAS_COCO = False
     print("[warn] pycocotools not found — will fall back to bbox masks")
 
+from scipy.ndimage import binary_erosion
+
 # ---------------------------------------------------------------------------
 # Semantic class definitions
 # ---------------------------------------------------------------------------
@@ -235,7 +237,8 @@ def bbox_to_mask(bbox, h: int, w: int) -> np.ndarray:
 
 
 def build_label_image(sem_data: dict, h: int, w: int,
-                      conf_threshold: float = 0.0) -> np.ndarray:
+                      conf_threshold: float = 0.0,
+                      max_mask_coverage: float = 0.25) -> np.ndarray:
     """
     Build an (H, W) uint8 label image from a semantic JSON dict.
     Pixels are set to the class index (1-based).
@@ -277,6 +280,11 @@ def build_label_image(sem_data: dict, h: int, w: int,
             if "bbox" in ann and ann["bbox"]:
                 mask = bbox_to_mask(ann["bbox"], h, w)
         if mask is not None and mask.sum() > 0:
+            # Skip masks that cover too much of the frame — these are
+            # over-segmented background regions, not tight object masks
+            coverage = mask.sum() / (h * w)
+            if coverage > max_mask_coverage:
+                continue
             items.append((int(mask.sum()), conf, lbl, mask))
 
     # Paint large objects first; small objects overwrite on overlap.
@@ -298,15 +306,15 @@ def main():
         description="Paint 3DGS Gaussians with semantic class colors."
     )
     parser.add_argument("--splat_ply",
-        default=str(ROOT / "outputs/splat_mast3r_v2/scene.ply"))
+        default=str(ROOT / "outputs/splat_v3/scene.ply"))
     parser.add_argument("--semantic_dir",
-        default=str(ROOT / "outputs/semantic"))
+        default=str(ROOT / "outputs/semantic_v3"))
     parser.add_argument("--cameras_bin",
         default=str(ROOT / "data/mast3r_out/sparse/0/cameras.bin"))
     parser.add_argument("--images_bin",
         default=str(ROOT / "data/mast3r_out/sparse/0/images.bin"))
     parser.add_argument("--output_ply",
-        default=str(ROOT / "outputs/scene_semantic.ply"))
+        default=str(ROOT / "outputs/splat_v3/scene_semantic_v3.ply"))
     parser.add_argument("--stats_json",
         default=str(ROOT / "outputs/semantic_stats.json"))
     parser.add_argument("--min_votes", type=int, default=2,
@@ -315,89 +323,132 @@ def main():
         help="Process at most this many frames (for quick testing)")
     parser.add_argument("--conf_threshold", type=float, default=0.30,
         help="Minimum SAM2 confidence to use a mask (default 0.30)")
+    parser.add_argument("--max_mask_coverage", type=float, default=0.25,
+        help="Maximum fraction of image a mask can cover (default 0.25)")
     parser.add_argument("--dim_factor", type=float, default=0.20,
         help="Brightness multiplier for unlabeled Gaussians (default 0.20)")
+    parser.add_argument("--centroid_filter", action="store_true", default=False,
+        help="Enable centroid-constrained voting (only use after fix_volumes.py "
+             "has produced corrected centroids in objects_3d_v3.json)")
     args = parser.parse_args()
 
-    # ── 1. Load COLMAP camera poses ──────────────────────────────────────
-    print("[...] Loading COLMAP cameras + poses...")
-    cameras = read_cameras_binary(args.cameras_bin)
-    cam     = next(iter(cameras.values()))
-    params  = cam["params"]
-    img_w   = int(cam["width"])
-    img_h   = int(cam["height"])
-    if len(params) >= 4:
-        fx, fy = float(params[0]), float(params[1])
-        cx, cy = float(params[2]), float(params[3])
-    else:
-        fx = fy = float(params[0])
-        cx, cy  = float(params[1]), float(params[2])
+    # ── 1. Load poses from transforms.json (correct coordinate system) ──
+    # transforms.json is produced by nerfstudio directly from COLMAP and is
+    # in the SAME coordinate system as the trained PLY. No conversion needed.
+    # Convention: c2w is OpenGL (col2 = camera -Z = back). To project into
+    # image we flip Y and Z to get OpenCV convention (+Z forward, Y down).
+    transforms_json = Path(args.cameras_bin).parent.parent.parent.parent / 'transforms.json'
+    if not transforms_json.exists():
+        # Try common locations
+        for candidate in [
+            ROOT / 'data/colmap_v3/transforms.json',
+            ROOT / 'data/colmap_video/transforms.json',
+        ]:
+            if candidate.exists():
+                transforms_json = candidate
+                break
+    if not transforms_json.exists():
+        sys.exit(f'[error] transforms.json not found. Tried {transforms_json}')
 
-    print(f"[OK] Camera: {img_w}×{img_h}  "
-          f"fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}")
+    print(f'[...] Loading poses from {transforms_json}')
+    with open(transforms_json) as f:
+        tfm = json.load(f)
 
-    colmap_images = read_images_binary(args.images_bin)
-    poses = {}  # stem → (R_w2c 3×3, t_w2c 3)
-    for img in colmap_images.values():
-        stem = Path(img["name"]).stem
-        poses[stem] = (
-            qvec_to_rotmat(img["qvec"]).astype(np.float64),
-            img["tvec"].astype(np.float64),
-        )
-    print(f"[OK] {len(poses)} COLMAP keyframe poses loaded")
+    fl_x = float(tfm['fl_x'])
+    fl_y = float(tfm.get('fl_y', fl_x))
+    cx   = float(tfm['cx'])
+    cy   = float(tfm['cy'])
+    img_w = int(tfm['w'])
+    img_h = int(tfm['h'])
+    fx, fy = fl_x, fl_y
+    print(f'[OK] Camera: {img_w}x{img_h}  fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}')
 
-    # ── 1b. Reconstruct nerfstudio normalisation transform ───────────────
-    # scene.ply Gaussian XYZs are in nerfstudio's normalised space:
-    #   p_ns = scale * R_orient @ (p_colmap − t_center)
-    # Invert to get COLMAP world-space coords for projection.
-    R_orient, t_center, ns_scale = compute_nerfstudio_transform(poses)
-    print(f"[OK] Nerfstudio transform: scale={ns_scale:.4f}  "
-          f"t_center=[{t_center[0]:.3f}, {t_center[1]:.3f}, {t_center[2]:.3f}]")
-    print(f"     mean_up (pre-orient) = {(-np.array([R for R, _ in poses.values()])[:, 1, :]).mean(axis=0)}")
+    # Build poses dict: stem -> (R_w2c, t_w2c) in OpenCV convention
+    # c2w (OpenGL): col0=right, col1=up, col2=back
+    # w2c: R_w2c = R_c2w.T,  t_w2c = -R_c2w.T @ t_c2w
+    # OpenCV flip: negate rows 1 and 2 of R_w2c, negate elements 1,2 of t_w2c
+    poses = {}  # stem -> (R_w2c_opencv 3x3, t_w2c_opencv 3)
+    for frame in tfm['frames']:
+        fp = frame['file_path']
+        stem = Path(fp).stem
+        c2w = np.array(frame['transform_matrix'], dtype=np.float64)  # 4x4
+        R_c2w = c2w[:3, :3]
+        t_c2w = c2w[:3, 3]
+        # world-to-camera (OpenGL)
+        R_w2c_gl = R_c2w.T
+        t_w2c_gl = -R_c2w.T @ t_c2w
+        # Convert to OpenCV: flip Y and Z rows
+        R_w2c_cv = R_w2c_gl.copy()
+        R_w2c_cv[1, :] *= -1
+        R_w2c_cv[2, :] *= -1
+        t_w2c_cv = t_w2c_gl.copy()
+        t_w2c_cv[1] *= -1
+        t_w2c_cv[2] *= -1
+        poses[stem] = (R_w2c_cv, t_w2c_cv)
+
+    print(f'[OK] {len(poses)} poses loaded from transforms.json')
 
     # ── 2. Match semantic JSONs to poses ────────────────────────────────
     sem_dir = Path(args.semantic_dir)
-    all_jsons = sorted(sem_dir.glob("frame_*.json"))
+    all_jsons = sorted(sem_dir.glob('frame_*.json'))
     matched = [p for p in all_jsons if p.stem in poses]
     if args.max_frames:
         matched = matched[:args.max_frames]
-    print(f"[OK] {len(matched)} frames with pose + semantic JSON")
+    print(f'[OK] {len(matched)} frames with pose + semantic JSON')
     if not matched:
-        sys.exit("[error] No matched frames. Check paths.")
+        sys.exit('[error] No matched frames. Check --semantic_dir path.')
 
     # ── 3. Load Gaussian splat ───────────────────────────────────────────
-    print(f"[...] Loading Gaussian splat: {args.splat_ply}")
+    print(f'[...] Loading Gaussian splat: {args.splat_ply}')
     splat_path = Path(args.splat_ply)
     if not splat_path.exists():
-        sys.exit(f"[error] splat PLY not found: {splat_path}")
+        sys.exit(f'[error] splat PLY not found: {splat_path}')
 
     gaussians, props, header_bytes = read_3dgs_ply(splat_path)
     N = len(gaussians)
-    print(f"[OK] Loaded {N:,} Gaussians  ({len(props)} properties)")
+    print(f'[OK] Loaded {N:,} Gaussians  ({len(props)} properties)')
 
-    # Extract xyz as float64 for projection precision
-    xyz_ns = np.stack([
-        gaussians["x"].astype(np.float64),
-        gaussians["y"].astype(np.float64),
-        gaussians["z"].astype(np.float64),
-    ], axis=1)  # (N, 3) — in nerfstudio normalised space
-
-    # ── 3b. Convert Gaussian XYZs to COLMAP world space ─────────────────
-    # Inverse of:  p_ns = scale * R_orient @ (p_colmap − t_center)
-    # So:          p_colmap = R_orient.T @ (p_ns / scale) + t_center
-    xyz = (R_orient.T @ (xyz_ns.T / ns_scale)).T + t_center  # (N, 3)
+    # XYZ in PLY = same coordinate system as transforms.json (no conversion)
+    xyz = np.stack([
+        gaussians['x'].astype(np.float64),
+        gaussians['y'].astype(np.float64),
+        gaussians['z'].astype(np.float64),
+    ], axis=1)  # (N, 3)
 
     xyz_min = xyz.min(axis=0); xyz_max = xyz.max(axis=0)
-    print(f"[OK] Gaussians converted to COLMAP space")
-    print(f"     X=[{xyz_min[0]:.2f}, {xyz_max[0]:.2f}]  "
-          f"Y=[{xyz_min[1]:.2f}, {xyz_max[1]:.2f}]  "
-          f"Z=[{xyz_min[2]:.2f}, {xyz_max[2]:.2f}]")
+    print(f'[OK] Gaussian XYZ range (PLY space):')
+    print(f'     X=[{xyz_min[0]:.2f}, {xyz_max[0]:.2f}]  '
+          f'Y=[{xyz_min[1]:.2f}, {xyz_max[1]:.2f}]  '
+          f'Z=[{xyz_min[2]:.2f}, {xyz_max[2]:.2f}]')
 
-    # Sanity: camera centres should lie within or near the Gaussian cloud
-    cam_centers_check = np.array([-R.T @ t for R, t in poses.values()])
-    print(f"     Camera centres X=[{cam_centers_check[:,0].min():.2f}, {cam_centers_check[:,0].max():.2f}]  "
-          f"Y=[{cam_centers_check[:,1].min():.2f}, {cam_centers_check[:,1].max():.2f}]  "
-          f"Z=[{cam_centers_check[:,2].min():.2f}, {cam_centers_check[:,2].max():.2f}]")
+    # Sanity: camera centres should be inside the Gaussian cloud
+    cam_pos = np.array([(-R.T @ t) for R, t in poses.values()])
+    print(f'     Camera centres X=[{cam_pos[:,0].min():.2f}, {cam_pos[:,0].max():.2f}]  '
+          f'Y=[{cam_pos[:,1].min():.2f}, {cam_pos[:,1].max():.2f}]  '
+          f'Z=[{cam_pos[:,2].min():.2f}, {cam_pos[:,2].max():.2f}]')
+
+    # ── 3b. Load object centroids for centroid-constrained voting ──────────
+    objects_3d_path = ROOT / 'outputs/objects_3d_v3.json'
+    objects_3d = {}
+    if objects_3d_path.exists():
+        with open(objects_3d_path) as f:
+            objects_3d = json.load(f)
+        print(f'[OK] Loaded {len(objects_3d)} object centroids from {objects_3d_path}')
+    else:
+      print('[warn] objects_3d_v3.json not found — centroid filtering disabled')
+
+    CLASS_RADII = {
+        'bed':    1.5,   # central cluster — moderate radius
+        'door':   1.5,   # central cluster — moderate radius
+        'desk':   1.2,   # central cluster — moderate radius
+        'chair':  1.0,
+        'laptop': 1.2,
+        'monitor':1.5,   # isolated at (4.73, 1.81) — tight
+        'fan':    1.0,
+        'lamp':   1.8,   # central position — needs larger radius
+        'shelf':  1.2,   # slightly isolated at (-0.92)
+        'window': 2.0,   # isolated at (1.79, -3.88) — tight
+    }
 
     # ── 4. Vote for semantic class per Gaussian ──────────────────────────
     # votes[i, c] = number of frames where Gaussian i projected into class c
@@ -415,7 +466,16 @@ def main():
         if not sem_data:
             continue
         label_img = build_label_image(sem_data, img_h, img_w,
-                                       conf_threshold=args.conf_threshold)
+                                       conf_threshold=args.conf_threshold,
+                                       max_mask_coverage=args.max_mask_coverage)
+        # Fix 1A — erode each class mask inward ~10px to shrink oversized SAM2 masks
+        if label_img.max() > 0:
+            eroded = np.zeros_like(label_img)
+            for _cls_idx in range(1, N_CLASSES + 1):
+                _cls_mask = label_img == _cls_idx
+                if _cls_mask.any():
+                    eroded[binary_erosion(_cls_mask, iterations=10)] = _cls_idx
+            label_img = eroded
         if label_img.max() == 0:
             continue
 
@@ -452,9 +512,29 @@ def main():
         if labeled_mask.sum() == 0:
             continue
 
-        np.add.at(votes,
-                  (valid_idx[labeled_mask], labels_hit[labeled_mask]),
-                  1)
+        # Centroid-constrained voting (Fix 1B): only allow votes from Gaussians
+        # within CLASS_RADII of the known 3D centroid for each class.
+        hit_idx    = valid_idx[labeled_mask]    # Gaussian indices that hit a label
+        hit_labels = labels_hit[labeled_mask]   # their class labels
+
+        if args.centroid_filter and objects_3d:
+            keep = np.ones(len(hit_idx), dtype=bool)
+            for class_name, class_idx in LABEL_TO_IDX.items():
+                sel = hit_labels == class_idx
+                if not sel.any():
+                    continue
+                if class_name in objects_3d and 'centroid_3d' in objects_3d[class_name]:
+                    centroid = np.array(objects_3d[class_name]['centroid_3d'])
+                    radius   = CLASS_RADII.get(class_name, 1.5)
+                    dists    = np.linalg.norm(xyz[hit_idx[sel]] - centroid, axis=1)
+                    keep[sel] = dists < radius
+            hit_idx    = hit_idx[keep]
+            hit_labels = hit_labels[keep]
+
+        if len(hit_idx) == 0:
+          continue
+
+        np.add.at(votes, (hit_idx, hit_labels), 1)
 
         if (frame_idx + 1) % 10 == 0 or frame_idx == 0:
             total_votes = (votes > 0).any(axis=1).sum()
