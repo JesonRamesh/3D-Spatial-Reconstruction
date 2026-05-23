@@ -879,49 +879,194 @@ New script uses DBSCAN to clean floater Gaussians and recompute tight bounding b
 Viewer uses `gsplat@latest` from jsDelivr CDN, loads `scene_yup.splat` and `scene_semantic_v3.splat` from HF Dataset URL.  
 **Pending:** Create HF Dataset repo, upload splat files, push Space to HF git.
 
-### Immediate next steps
+### Immediate next steps (after splat_v4 training completes)
 
+See Session 5 log above for full post-training checklist.
+
+---
+
+## splat_v4 Bluestreak Training Log
+
+### What went wrong and how we fixed it
+
+**Attempt 1 — `--orientation-method up` flag missing (nerfstudio 1.1.5):**
+```
+╭─ Unrecognized options ─────────────────────────────────────────────╮
+│ Unrecognized options: --orientation-method, up, --auto-scale-poses │
+```
+Fix: Removed `--orientation-method` from `ns-process-data` call.
+Applied Y-up alignment manually in Python after `ns-process-data` runs.
+
+**Attempt 2 — `ns-process-data --skip-colmap` produced empty `colmap_v4/` dir:**
+`transforms.json` was never written because `ns-process-data` requires the
+colmap DB to match the images — reusing a sparse from a different path didn't work.
+Fix: Bypassed `ns-process-data` entirely. Applied Y-up alignment directly to
+`data/colmap_v3/transforms.json` using Python and wrote to `data/colmap_v4/transforms.json`.
+
+**Python Y-up alignment (run directly on Bluestreak):**
 ```bash
-# Step 1: Re-run semantic painting (erosion only, no centroid filter, all 539 frames)
-# Takes ~15–30 min on Mac (CPU only)
-python scripts/paint_semantic_gaussians.py \
-  --conf_threshold 0.35 \
-  --min_votes 3 \
-  --max_mask_coverage 0.20
-# Default paths are now correct: reads scene.ply + semantic_v3/, writes scene_semantic_v3.ply
+cd /scratch0/jrameshs/roboscene-plus
+mkdir -p data/colmap_v4
+ln -sf $(pwd)/data/video_frames_v2 data/colmap_v4/images
 
-# Step 2: Convert new semantic PLY to .splat
-python scripts/convert_to_splat.py \
-  --input outputs/splat_v3/scene_semantic_v3.ply \
-  --output outputs/splat_v3/scene_semantic_v3.splat
+python3 << 'PYEOF'
+import json, numpy as np
+from pathlib import Path
 
-# Step 3: Run fix_volumes.py to get real bounding boxes
-python scripts/fix_volumes.py
-# Check output — volumes should be < 5 m³
-# cp outputs/objects_3d_v3_fixed.json outputs/objects_3d_v3.json
+with open('data/colmap_v3/transforms.json') as f:
+    tfm = json.load(f)
+frames = tfm['frames']
+c2ws = np.array([f['transform_matrix'] for f in frames], dtype=np.float64)
+ups = c2ws[:, :3, 1]
+mean_up = ups.mean(axis=0); mean_up /= np.linalg.norm(mean_up)
 
-# Step 4: Upload to HF and push Space (replace jrameshs with your username)
-huggingface-cli login
-python - <<'EOF'
-from huggingface_hub import HfApi
-api = HfApi()
-api.create_repo(repo_id="jrameshs/roboscene-data", repo_type="dataset", private=False, exist_ok=True)
-api.upload_file(path_or_fileobj="outputs/splat_v3/scene_yup.splat",
-                path_in_repo="scene_yup.splat",
-                repo_id="jrameshs/roboscene-data", repo_type="dataset")
-api.upload_file(path_or_fileobj="outputs/splat_v3/scene_semantic_v3.splat",
-                path_in_repo="scene_semantic_v3.splat",
-                repo_id="jrameshs/roboscene-data", repo_type="dataset")
-print("Done")
-EOF
+def rotation_between(a, b):
+    a = np.array(a) / np.linalg.norm(a); b = np.array(b) / np.linalg.norm(b)
+    v = np.cross(a, b); c = float(np.dot(a, b)); s = np.linalg.norm(v)
+    if s < 1e-8: return np.eye(3)
+    v /= s; K = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
+    return np.eye(3) + s*K + (1-c)*(K@K)
 
-# Step 5: Push hf_space/ to HF Spaces
-cd hf_space/
-git init
-git remote add origin https://huggingface.co/spaces/jrameshs/roboscene-plus
-git add .
-git commit -m "Initial deploy: RoboScene+ 3D viewer"
-git push origin main
+R_orient = rotation_between(mean_up, [0.0, 1.0, 0.0])
+R4 = np.eye(4); R4[:3,:3] = R_orient
+c2ws_rot = (R4[None] @ c2ws)
+center = c2ws_rot[:, :3, 3].mean(axis=0)
+c2ws_rot[:, :3, 3] -= center
+scale = 1.0 / np.abs(c2ws_rot[:, :3, 3]).max()
+c2ws_rot[:, :3, 3] *= scale
+
+for i, frame in enumerate(frames):
+    frame['transform_matrix'] = c2ws_rot[i].tolist()
+    frame['file_path'] = 'images/' + Path(frame['file_path']).name
+tfm['applied_transform_yup'] = R4.tolist()
+tfm['applied_scale_yup'] = float(scale)
+
+with open('data/colmap_v4/transforms.json', 'w') as f:
+    json.dump(tfm, f, indent=2)
+PYEOF
+```
+
+**Attempt 3 — `ns-train` interactive prompt crashed nohup job:**
+```
+File ".../nerfstudio_dataparser.py", line 361, in _generate_dataparser_outputs
+    self.create_pc = Confirm.ask(
+OSError: [Errno 9] Bad file descriptor
+```
+Nerfstudio 1.1.5 prompts "create point cloud from COLMAP?" — blocks when stdin
+is closed in a nohup background job.
+Fix: Pass `--load-3D-points False` to the `nerfstudio-data` subcommand.
+
+**Attempt 4 — Wrong flag placement (model flags after data subcommand):**
+```
+Unrecognized options: --pipeline.datamanager.dataparser.load-3D-points, False
+```
+In nerfstudio 1.1.5, model/pipeline flags go BEFORE the data subcommand,
+data flags go AFTER it.
+
+### ✅ Working command (nerfstudio 1.1.5):
+```bash
+cd /scratch0/jrameshs/roboscene-plus
+
+nohup ns-train splatfacto \
+    --output-dir outputs/splat_v4 \
+    --max-num-iterations 60000 \
+    --pipeline.model.cull-alpha-thresh 0.005 \
+    --pipeline.model.densify-grad-thresh 0.0002 \
+    --pipeline.model.use-scale-regularization True \
+    --pipeline.model.max-gauss-ratio 10.0 \
+    --viewer.quit-on-train-completion True \
+    nerfstudio-data \
+    --data data/colmap_v4 \
+    --load-3D-points False \
+    --orientation-method up \
+    > logs/splat_v4.log 2>&1 &
+
+tail -f logs/splat_v4.log
+```
+
+**Key insight:** `nerfstudio-data` subcommand DOES have `--orientation-method up`
+(unlike `ns-process-data`). Passing it here means nerfstudio applies Y-up alignment
+during data loading, even though our `transforms.json` was already manually
+pre-aligned. Double-alignment is harmless (second rotation is near-identity).
+
+### Training status
+- Started: Sat May 24 ~00:15 BST
+- Image caching confirmed working
+- Expected completion: ~03:00 BST
+- Log: `/scratch0/jrameshs/roboscene-plus/logs/splat_v4.log`
+
+### Check training progress
+```bash
+# From Bluestreak
+tail -f logs/splat_v4.log | grep -E "Step|PSNR|loss|ERROR|Finished"
+
+# From Mac (if SSH disconnects)
+ssh -J jrameshs@knuckles.cs.ucl.ac.uk jrameshs@bluestreak.cs.ucl.ac.uk \
+  "tail -30 /scratch0/jrameshs/roboscene-plus/logs/splat_v4.log"
+```
+
+### After training completes — export PLY
+```bash
+# On Bluestreak
+CONFIG=$(find outputs/splat_v4 -name "config.yml" | sort | tail -1)
+echo "Config: $CONFIG"
+
+# Try ns-export first
+ns-export gaussian-splat \
+    --load-config $CONFIG \
+    --output-dir outputs/splat_v4
+
+# Rename if needed
+[ -f outputs/splat_v4/splat.ply ] && mv outputs/splat_v4/splat.ply outputs/splat_v4/scene.ply
+ls -lh outputs/splat_v4/scene.ply
+```
+
+### Download to Mac
+```bash
+# Run on Mac
+mkdir -p ~/Downloads/3D-Spatial-Reconstruction/outputs/splat_v4
+scp -J jrameshs@knuckles.cs.ucl.ac.uk \
+  jrameshs@bluestreak.cs.ucl.ac.uk:/scratch0/jrameshs/roboscene-plus/outputs/splat_v4/scene.ply \
+  ~/Downloads/3D-Spatial-Reconstruction/outputs/splat_v4/scene.ply
+
+mkdir -p ~/Downloads/3D-Spatial-Reconstruction/data/colmap_v4
+scp -J jrameshs@knuckles.cs.ucl.ac.uk \
+  jrameshs@bluestreak.cs.ucl.ac.uk:/scratch0/jrameshs/roboscene-plus/data/colmap_v4/transforms.json \
+  ~/Downloads/3D-Spatial-Reconstruction/data/colmap_v4/transforms.json
+```
+
+### Next steps on Mac after download
+```bash
+# 1. Convert to .splat
+python3 scripts/convert_to_splat.py \
+  --input outputs/splat_v4/scene.ply \
+  --output outputs/splat_v4/scene.splat
+
+# 2. Test orbit in viewer
+python3 open_viewer.py
+# http://localhost:8080/app/static/index.html
+# Verify: horizontal drag = lazy-Susan orbit around vertical room axis
+
+# 3. Re-run semantic painting on the new Y-up PLY
+python3 scripts/paint_semantic_gaussians.py \
+  --splat_ply outputs/splat_v4/scene.ply \
+  --semantic_dir outputs/semantic_v3 \
+  --output_ply outputs/splat_v4/scene_semantic.ply \
+  --conf_threshold 0.35 --min_votes 3 --max_mask_coverage 0.20
+
+# 4. Convert semantic PLY to .splat
+python3 scripts/convert_to_splat.py \
+  --input outputs/splat_v4/scene_semantic.ply \
+  --output outputs/splat_v4/scene_semantic.splat
+
+# 5. Update viewer to load splat_v4 (edit SPLAT_CANDIDATES in app/static/index.html)
+#    Change first entry to: '/outputs/splat_v4/scene.splat'
+
+# 6. Run fix_volumes on new semantic PLY
+python3 scripts/fix_volumes.py \
+  --semantic_ply outputs/splat_v4/scene_semantic.ply \
+  --objects_json outputs/objects_3d_v3.json \
+  --output_json outputs/objects_3d_v4.json --apply
 ```
 
 ---
