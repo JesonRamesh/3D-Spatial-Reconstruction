@@ -121,7 +121,7 @@ else
         --labels       "bed,desk,chair,laptop,shelf,door,window,fan,lamp,monitor" \
         --device       cuda \
         --weights_dir  /scratch0/jrameshs/gdino_weights \
-        --debug_frames 5
+        --skip_existing
 
     N_DONE=$(ls "$SEMAN_OUT"/*.json 2>/dev/null | grep -v debug | wc -l)
     echo "      Done: $N_DONE semantic JSONs created"
