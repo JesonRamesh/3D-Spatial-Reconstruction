@@ -28,6 +28,90 @@
 
 ---
 
+## Session 4 Progress Log (2026-05-23)
+
+### What We Did
+
+**A. Splat v3 — new video, more training**
+- Uploaded room_video_v2.MOV (899MB, 320s) to bluestreak
+- Ran COLMAP v3 with sequential_matcher: 539/641 frames registered (84%), 103K points
+- Trained splatfacto 60K steps: 3.74M Gaussians, 242MB PLY
+- Fixed multiple issues along the way: stale COLMAP DB, `densify-until-iter` invalid flag,
+  CUDA OOM (densify-grad-thresh 0.0002), nohup script not found (git push required)
+- Result: splat_v3/scene.ply downloaded and working in viewer
+
+**B. Floater removal research and attempts**
+- Read TIDI-GS paper (arXiv:2601.09291): floaters need 4 simultaneous signals to identify
+- Built `scripts/clean_splat_visibility.py`: multi-criterion filter (visibility + convex hull + alpha)
+- Visibility analysis showed floaters have identical visibility to real geometry (mean 35 views each)
+- All cleaning attempts cut the bed wall:
+  - hull+alpha only: 2.25M kept, bed still cut
+  - hull+visibility min_views=3: 1.83M kept, bed missing
+- **Conclusion**: Post-processing floater removal is fundamentally limited without semantic info
+
+**C. Semantic segmentation attempts**
+- Tried running Grounded SAM2 on bluestreak on v2 frames (641 frames)
+- **Blocked by**: GroundingDINO BERT/transformers incompatibility
+  - `AttributeError: 'BertModel' object has no attribute 'get_head_mask'`
+  - Root cause: transformers version mismatch — method moved in newer transformers
+  - Also: colmap_env (Python 3.14) kept overriding roboscene_env (Python 3.11)
+  - Also: NCCL/CUDA mismatch on the GPU node → had to reinstall torch for cu121
+  - Fixed torch (2.5.1+cu121 now works), fixed GroundingDINO import path
+  - Still blocked on BERT API change in GroundingDINO bertwarper.py line 29
+- **Fallback**: Ran paint_semantic_gaussians.py locally on Mac using:
+  - v1 semantic JSONs (outputs/semantic/, 317 frames, 4-digit names)
+  - v1 COLMAP poses (colmap_video/sparse/0/)
+  - v3 splat (splat_v3/scene.ply)
+  - Fixed RLE mask size mismatch (v1 JSONs at 288×512, camera expects 1080×1920)
+  - Result: 1.53M Gaussians labelled (40.9%), scene_semantic.ply generated
+  - **Problem**: Labels in wrong positions — v1 COLMAP poses don't match v3 splat coordinate system
+  - The nerfstudio normalisation transform computed from v1 poses is wrong for v3 splat
+
+### What Failed and Why
+
+| Attempt | Why It Failed |
+|---|---|
+| Visibility filter removes floaters | Floaters have same visibility as real geometry (mean 35 views) |
+| Convex hull crop | Room not convex — bed wall outside hull of camera positions |
+| Bbox crop | Room not axis-aligned |
+| SOR | Floaters are semi-dense clusters, not isolated points |
+| Alpha threshold | Removes real geometry in sparse-coverage areas |
+| SAM2 on bluestreak | GroundingDINO BERT API incompatibility |
+| Semantic paint with v1 poses on v3 splat | Coordinate system mismatch — labels appear in wrong 3D positions |
+
+### What Needs to Happen Next
+
+**Priority 1 — Fix semantic labels (the right way)**
+The semantic paint MUST use poses from the same COLMAP run that trained the splat.
+For splat_v3, this means colmap_v3 poses (data/colmap_v3/sparse/0/).
+But we only have v1 semantic JSONs locally (4-digit frame names).
+Solutions:
+1. Fix GroundingDINO on bluestreak and run SAM2 on v2 frames → v3 JSONs → paint with colmap_v3
+2. Use existing v1 JSONs but project them onto colmap_v3 poses via pose similarity
+3. Run SAM2 locally on Mac on a subset of v2 frames (slower but avoids bluestreak issues)
+
+**Priority 2 — Fix viewer camera for v3**
+The OrbitControls rotation axis is wrong. Camera position is correct but rotation
+behaves like screen-space panning. Need to find the correct controls handle in the
+GS library and force up=[0,1,0] + screenSpacePanning=false.
+
+**Priority 3 — Full object segmentation in viewer**
+Current paint: labelled=class colour, unlabelled=20% dim grey
+Wanted: labelled=fully bright class colour, unlabelled=remove entirely OR room-grey
+This requires a separate PLY export with:
+  - Labelled Gaussians: full opacity, class RGB colour
+  - Unlabelled Gaussians: either removed or greyed out (walls/floor/ceiling)
+
+**Priority 4 — HF Spaces + README**
+Deadline is 25 May. These must happen regardless of semantic quality.
+
+### Immediate Fix — Use v3 scene.splat as base in viewer
+Stop loading the broken semantic splat. Use scene.splat (full v3, no cleaning).
+It has more Gaussians and better coverage than v2 scene_full.splat.
+The floaters are acceptable for the demo — they don't hide real geometry.
+
+---
+
 ## Root Cause Analysis — Why Patches Exist
 
 The patches in the reconstruction have 3 distinct causes:
