@@ -12,14 +12,19 @@
 | COLMAP v2 | ✅ | 304/317 registered, 64K points |
 | COLMAP v3 | ✅ | 539 frames registered (84%), 103K points — from video v2 |
 | Splat v1 | ✅ | 30K steps, random init — superseded |
-| Splat v2 | ✅ | 40K steps, point cloud init — best viewer result so far |
-| Splat v3 | ✅ | 60K steps, 539 views, 3.74M Gaussians, 242MB PLY — downloaded |
-| Best viewer result | ⚠️ | splat_video_v2/scene_full.splat — full room, some floaters |
-| Floater removal | ⬜ | New approach: visibility filter + convex hull crop (in progress) |
-| Camera navigation | ⚠️ | v3 coordinate system differs — rotation axis wrong in viewer |
-| Semantics | ⬜ | Needs re-run with colmap_v3 poses |
+| Splat v2 | ✅ | 40K steps, point cloud init — full room visible, some floaters |
+| Splat v3 | ✅ | 60K steps, 539 views, 3.74M Gaussians — **current best base** |
+| Splat v3 clean variants | ❌ | hull+visibility filter cuts bed wall — failed approach |
+| Semantic painting (Mac) | ⚠️ | Ran locally with v1 COLMAP poses → labels in wrong positions |
+| Semantic painting correct | ⬜ | Need to re-run with colmap_v3 poses on bluestreak |
+| GroundingDINO on bluestreak | ❌ | BERT/transformers incompatibility blocks SAM2 pipeline |
+| Camera navigation | ⚠️ | v3 coordinate system differs — rotation axis wrong |
 | HF Spaces | ⬜ | Not started |
 | README | ⬜ | Not started |
+
+**Current viewer**: loads `splat_v3/scene_semantic.splat` (wrong labels)
+**Best clean splat**: `splat_v3/scene.splat` (full 3.74M Gaussians, no cleaning)
+**Best previous splat**: `splat_video_v2/scene_full.splat` (2.28M, correct camera)
 
 ---
 

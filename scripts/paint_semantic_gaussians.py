@@ -257,7 +257,22 @@ def build_label_image(sem_data: dict, h: int, w: int,
             continue
         mask = None
         if "mask_rle" in ann and ann["mask_rle"]:
-            mask = decode_rle(ann["mask_rle"], h, w)
+            rle   = ann["mask_rle"]
+            rle_h = rle.get("size", [h, w])[0]
+            rle_w = rle.get("size", [h, w])[1]
+            mask  = decode_rle(rle, rle_h, rle_w)
+            # Resize mask to camera resolution if RLE was encoded at different size
+            if mask is not None and (rle_h != h or rle_w != w):
+                from PIL import Image as _PIL
+                mask = np.array(
+                    _PIL.fromarray(mask).resize((w, h), _PIL.NEAREST)
+                )
+                # Also rescale bbox coordinates if present
+                if "bbox" in ann and ann["bbox"]:
+                    sx, sy = w / rle_w, h / rle_h
+                    b = ann["bbox"]
+                    ann = dict(ann)  # don't mutate original
+                    ann["bbox"] = [b[0]*sx, b[1]*sy, b[2]*sx, b[3]*sy]
         if mask is None or mask.sum() == 0:
             if "bbox" in ann and ann["bbox"]:
                 mask = bbox_to_mask(ann["bbox"], h, w)
