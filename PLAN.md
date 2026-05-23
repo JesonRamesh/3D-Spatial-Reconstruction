@@ -1,5 +1,5 @@
 # RoboScene+ — Full Quality Plan
-### Updated: 2026-05-22 | Deadline: 2026-05-25 (3 days)
+### Updated: 2026-05-23 | Deadline: 2026-05-25 (2 days)
 
 ---
 
@@ -7,14 +7,17 @@
 
 | What | Status | Notes |
 |---|---|---|
-| Video | ✅ | 158s, 73.7° HFOV, 1920×1080, 2fps → 317 frames |
-| COLMAP | ✅ | 304/317 registered, 64K points, cameras.bin downloaded |
-| Splat v1 | ✅ | 30K steps, random init, distorted — superseded |
-| Splat v2 | ✅ | 40K steps, point cloud init, scale regularisation |
-| Best viewer result | ⚠️ | scene_full.splat (2.28M Gaussians) — full room, some floaters |
-| Floater removal | ⚠️ | All attempts crop real geometry. Root cause: need better training |
-| Camera navigation | ✅ | WASD working, eye-level view |
-| Semantics | ⬜ | Needs re-run with new COLMAP poses |
+| Video v1 | ✅ | 158s, 73.7° HFOV, 1920×1080, 2fps → 317 frames |
+| Video v2 | ✅ | 320s, 1920×1080, 60fps, room_video_v2.MOV — better coverage |
+| COLMAP v2 | ✅ | 304/317 registered, 64K points |
+| COLMAP v3 | ✅ | 539 frames registered (84%), 103K points — from video v2 |
+| Splat v1 | ✅ | 30K steps, random init — superseded |
+| Splat v2 | ✅ | 40K steps, point cloud init — best viewer result so far |
+| Splat v3 | ✅ | 60K steps, 539 views, 3.74M Gaussians, 242MB PLY — downloaded |
+| Best viewer result | ⚠️ | splat_video_v2/scene_full.splat — full room, some floaters |
+| Floater removal | ⬜ | New approach: visibility filter + convex hull crop (in progress) |
+| Camera navigation | ⚠️ | v3 coordinate system differs — rotation axis wrong in viewer |
+| Semantics | ⬜ | Needs re-run with colmap_v3 poses |
 | HF Spaces | ⬜ | Not started |
 | README | ⬜ | Not started |
 
@@ -24,35 +27,45 @@
 
 The patches in the reconstruction have 3 distinct causes:
 
-### Cause 1 — Insufficient Video Coverage (Primary)
-The video was shot at 2fps sweeping around the room. Several areas were not covered:
+### Cause 1 — Insufficient Video Coverage (Partially Fixed)
+Video v1 was shot at 2fps sweeping around the room. Several areas were not covered:
 - **Floor centre**: camera never pointed straight down at the floor
-- **Bed wall corners**: camera moved too fast through these areas
+- **Bed wall corners**: camera moved too fast
 - **Ceiling**: camera rarely pointed upward
 
-COLMAP registered 304 views but coverage is uneven. Areas with <3 overlapping
-views have no Gaussians → visible patches.
+Video v2 (room_video_v2.MOV, 320s) adds ceiling passes and better corner coverage.
+COLMAP v3 registered 539/640 frames (84%) vs 304/317 (96%) for v1 — more total
+views but some motion blur frames dropped.
 
-**Fix**: Re-record video with dedicated coverage passes:
-- Pass 1: slow perimeter walk at eye level (existing)
-- Pass 2: slow perimeter walk pointing DOWN at floor (new)
-- Pass 3: dedicated corner coverage, 5 seconds per corner (new)
-- Pass 4: ceiling pass pointing UP (new, optional)
-Total: ~5 minutes of video → ~600 frames → near-complete coverage
+### Cause 2 — Single-Criterion Pruning Always Fails (Root Cause of Cleaning Failures)
+All previous cleaning attempts used a single criterion:
+- Alpha threshold → removes real geometry in thin-coverage areas
+- SOR (spatial outlier removal) → floaters are semi-dense clusters, not isolated
+- Bbox crop → room is not axis-aligned, crops the bed
 
-### Cause 2 — Gaussian Splatting Needs More Steps for Thin Coverage Areas
-Areas with few views need more training iterations to converge.
-40K steps is good for well-covered areas but thin-coverage areas
-need 60K-100K steps to fully densify.
+**Research finding (TIDI-GS, arXiv:2601.09291)**: Floaters can only be reliably
+identified by combining 4 simultaneous weak signals:
+1. Low multi-view visibility (seen from <3 cameras)
+2. Low opacity
+3. Low learned importance score
+4. High spatial isolation
 
-**Fix**: Train for 60K steps with aggressive densification settings.
+A Gaussian is only a floater if ALL 4 signals agree. This prevents false positives
+on real geometry (bed wall, thin structures) that share 1-2 floater characteristics.
 
-### Cause 3 — Floaters Cannot Be Removed Without Losing Real Geometry
-All spatial/alpha/SOR filters tested remove real geometry alongside floaters
-because the floaters are the same size and density as real Gaussians in
-thin-coverage areas. The only reliable fix is better input data (Cause 1).
+**Our post-processing approximation** (implementable now without retraining):
+- Signal 1: visibility filter — project Gaussians into all COLMAP cameras, count views
+- Signal 2+3: alpha threshold (weak, used only after visibility filter)
+- Signal 4: convex hull crop of camera positions (not bbox — preserves bed)
 
-**Insight**: Don't fight the floaters with post-processing. Fix the input.
+### Cause 3 — v3 Coordinate System Changed
+Video v2 started from a different position/direction than v1. COLMAP chose a
+different canonical orientation. Nerfstudio's scene normalisation scales differently.
+Result: v3 splat is rotated relative to v2, breaking the viewer camera constants.
+
+**Fix**: Recalibrate viewer HOME_POS/HOME_LOOK/cameraUp from colmap_v3/transforms.json.
+Analysis shows: cameraUp=[0,1,0], HOME_POS=[0.30, 0.31, -0.56], but OrbitControls
+rotation axis still wrong — needs screenSpacePanning=false fix in GS library controls.
 
 ---
 
@@ -60,18 +73,20 @@ thin-coverage areas. The only reliable fix is better input data (Cause 1).
 
 | What | Status | Notes |
 |---|---|---|
-| 3D Gaussian Splat (new) | ✅ Done | 304 views, 3.1M Gaussians, 202MB PLY |
-| Splat viewer | ✅ Loads | New splat visible, room structure correct |
-| Splat quality | ⚠️ Needs fixing | Floaters outside room, floor gap, low opacity |
-| Camera navigation | ⚠️ Broken | Top-down locked, cannot freely navigate |
-| Semantic labels | ⚠️ Wrong coords | objects_3d.json uses old VGGT coordinate system |
-| Semantic painting | ⬜ Not re-run | Needs re-running with new COLMAP poses |
+| Splat v3 PLY | ✅ Done | 539 views, 3.74M Gaussians, 242MB — outputs/splat_v3/scene.ply |
+| Splat v3 .splat | ✅ Done | 114MB — outputs/splat_v3/scene.splat |
+| COLMAP v3 poses | ✅ Done | data/colmap_v3/transforms.json, sparse/0/ |
+| Splat viewer loads v3 | ✅ | SPLAT_CANDIDATES updated, v3 first |
+| v3 visual quality | ⚠️ | Floaters present, patches on objects vs v2 |
+| Camera navigation | ⚠️ | Eye-level position correct, rotation axis wrong |
+| Floater removal | ⬜ | Visibility filter + convex hull crop — next step |
+| Semantic labels | ⬜ | Needs re-run with colmap_v3 poses |
 | Scene graph + Claude API | ✅ Done | query_scene.py working |
-| HF Spaces | ⬜ Not started | After splat is fixed |
-| README | ⬜ Not started | Last step |
+| HF Spaces | ⬜ | After splat cleaning done |
+| README | ⬜ | Last step |
 
-**Current best splat**: `outputs/splat_video_v2/scene_full.splat` (70MB, 2.28M Gaussians)
-**Status**: Room fully visible including bed. Some floaters remain outside room. Camera navigation working with WASD. Semantics need re-running with new COLMAP poses.
+**Current best splat**: `outputs/splat_v3/scene.splat` (114MB, 3.74M Gaussians)
+**Fallback**: `outputs/splat_video_v2/scene_full.splat` (70MB, 2.28M Gaussians) — full room visible, camera works correctly.
 
 ---
 
@@ -85,8 +100,12 @@ thin-coverage areas. The only reliable fix is better input data (Cause 1).
 | v2 scene_clean.splat | SOR k=20 std=2.0 | 2.14M Gaussians | Only 6% removed, floaters remain |
 | v2 scene_clean_aggressive | SOR k=20 std=1.0 | 2.06M Gaussians | Only 10% removed |
 | v2 scene_final.splat | SOR+crop tight bbox | 1.21M Gaussians | Bed wall missing again |
+| v2 scene_room.splat | camera bbox + 1.5m pad | 1.8M Gaussians | Bed still clipped |
+| v3 scene.splat | 60K steps, 539 views | 3.74M Gaussians | ⚠️ More floaters, camera broken |
 
-**Root cause of difficulty**: Floaters in this splat are semi-dense clusters (not isolated points), so SOR cannot distinguish them from real surfaces. Alpha threshold alone overshoots and removes real geometry. Spatial crop cuts the bed which extends to Z=-3.19.
+**Root cause of all failures**: Single-criterion pruning cannot distinguish floaters
+from real geometry. Floaters are semi-dense clusters with similar alpha/scale to
+real surfaces. Need multi-criterion approach (TIDI-GS research, 2026).
 
 **Best current result**: `scene_full.splat` — full room visible, 70MB, some external floaters acceptable for deadline.
 
@@ -130,13 +149,116 @@ thin-coverage areas. The only reliable fix is better input data (Cause 1).
 
 ---
 
-## Full Quality Plan — In Order
+## Full Quality Plan — Updated
 
 ```
-Phase A ── Re-record video (better coverage)          (20 min, phone)
+Phase A ── Re-record video (better coverage)          ✅ DONE (room_video_v2.MOV)
     │
-Phase B ── Upload + retrain on bluestreak             (3h, bluestreak)
-    │         60K steps + aggressive densification
+Phase B ── Upload + retrain on bluestreak             ✅ DONE (splat_v3, 539 views, 60K steps)
+    │
+Phase C ── Multi-criterion floater removal            ⬜ IN PROGRESS
+    │         visibility filter + convex hull crop
+    │         script: scripts/clean_splat_visibility.py
+    │
+Phase D ── Fix viewer camera for v3 coordinate system ⬜ NEXT
+    │         screenSpacePanning fix in OrbitControls
+    │
+Phase E ── Re-run semantics with colmap_v3 poses      ⬜ After C+D
+    │
+Phase F ── Deploy to HF Spaces                        ⬜
+    │
+Phase G ── README + Polish                            ⬜
+```
+
+---
+
+## Phase C — Multi-Criterion Floater Removal (1-2h, Mac)
+
+### Why previous methods failed
+SOR, alpha threshold, and bbox crop all use a single criterion.
+Floaters are semi-dense clusters with similar characteristics to real surfaces.
+The TIDI-GS paper (arXiv:2601.09291) proves you need 4 simultaneous signals.
+
+### Our post-processing approximation of TIDI-GS
+We cannot run the full TIDI framework without retraining, but we can approximate
+the two most powerful signals as post-processing steps:
+
+**Signal 1 — Multi-view visibility filter** (most powerful)
+Project every Gaussian into every COLMAP camera. Count how many cameras it is
+visible in (inside frustum + alpha > threshold). Real surfaces are visible from
+many cameras (the room was swept 2-3 times). Floaters outside the room are only
+visible from 1-2 cameras before exiting the frustum.
+- Remove Gaussians visible in fewer than N_min views (start with N_min=3)
+- This is geometry-aware: bed wall Gaussians are seen from many views → safe
+
+**Signal 2 — Convex hull crop** (replaces failed bbox crop)
+The bbox crop failed because the room is not axis-aligned. The convex hull of
+camera positions follows the actual room shape. Any Gaussian outside the
+camera convex hull + 1.5m padding cannot be real room geometry (cameras were
+always inside the room).
+- Compute scipy.spatial.ConvexHull of all COLMAP camera positions
+- Inflate each face outward by 1.5m
+- Remove Gaussians outside inflated hull
+- Preserves the bed (cameras walked near the bed → inside hull)
+
+**Signal 3 — Alpha threshold** (last, conservative)
+- Remove Gaussians with opacity < 0.005 after sigmoid (near-invisible)
+
+### Step C.1 — Build and run the cleaning script
+```bash
+python3 scripts/clean_splat_visibility.py \
+  --input   outputs/splat_v3/scene.ply \
+  --output  outputs/splat_v3/scene_clean.ply \
+  --transforms data/colmap_v3/transforms.json \
+  --min_views 3 \
+  --hull_padding 1.5 \
+  --alpha_min 0.005
+```
+
+### Step C.2 — Convert and preview
+```bash
+python3 scripts/convert_to_splat.py \
+  --input  outputs/splat_v3/scene_clean.ply \
+  --output outputs/splat_v3/scene_clean.splat
+python3 open_viewer.py
+```
+
+### Step C.3 — Tune if needed
+If bed wall is missing → lower --min_views to 2
+If floaters remain → raise --min_views to 5, tighten --hull_padding to 1.2
+Target: 1.5-2.5M Gaussians (vs 3.74M raw)
+
+---
+
+## Phase D — Fix Viewer Camera for v3 (30 min, Mac)
+
+### What is known
+- cameraUp = [0, 1, 0] ✅ confirmed from floor camera analysis
+- HOME_POS = [0.30, 0.31, -0.56] ✅ actual camera position from transforms.json
+- HOME_LOOK = [0, 0, 0] ✅ scene centre in normalised space
+- Problem: OrbitControls rotation axis is wrong (rotates around screen-Z not world-Y)
+
+### Root cause
+The GS library's built-in controls initialise OrbitControls with a default up vector
+that doesn't match our cameraUp setting. Need to force:
+  ctrl.object.up.set(0, 1, 0)
+  ctrl.screenSpacePanning = false
+  ctrl.update()
+after controls initialise (async — needs setTimeout).
+
+### Fix already applied
+fixControls() function added to index.html, called at 0ms, 500ms, 1500ms.
+If still broken: inspect viewer.controls in console after page loads to find
+the correct OrbitControls handle.
+
+---
+
+## Original Full Quality Plan — In Order
+
+```
+Phase A ── Re-record video (better coverage)          ✅ DONE
+    │
+Phase B ── Upload + retrain on bluestreak             ✅ DONE
     │
 Phase C ── Download + clean splat on Mac              (30 min, Mac)
     │         scene_full → final best result
