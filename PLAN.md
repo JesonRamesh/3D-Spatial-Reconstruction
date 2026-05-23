@@ -172,6 +172,73 @@ Phase G ── README + Polish                            ⬜
 
 ---
 
+## Current Blocker — GroundingDINO / Transformers Incompatibility on Bluestreak
+
+### Status: ⚠️ BLOCKED
+
+### Symptom
+```
+AttributeError: 'BertModel' object has no attribute 'get_head_mask'
+  File groundingdino/models/GroundingDINO/bertwarper.py line 29
+  self.get_head_mask = bert_model.get_head_mask
+```
+
+### Root Cause Analysis
+GroundingDINO's `BertModelWarper` tries to grab `get_head_mask` as an instance
+attribute from `BertModel`. In older transformers (<=4.35) this was a method on
+the instance. In newer transformers (>=4.36) it moved to the base class and is
+no longer directly accessible as an attribute in the same way.
+
+Three compounding issues:
+1. **Wrong env**: `colmap_env` (Python 3.14) has a broken groundingdino install
+   that keeps getting imported instead of `roboscene_env` (Python 3.11)
+2. **Transformers version mismatch**: the transformers version in roboscene_env
+   may be too new for the groundingdino version installed
+3. **torch CUDA mismatch**: needed torch reinstall for CUDA 12.6 → cu121
+   (already fixed — torch 2.5.1+cu121 now works)
+
+### Things Already Tried
+| Attempt | Result |
+|---|---|
+| `pip install groundingdino-py` | Installs into colmap_env (Python 3.14) |
+| `pip install transformers==4.38.2 --force-reinstall` | Still same error |
+| `git clone + pip install -e .` from source | Same error |
+| Reinstall torch for cu121 | ✅ Fixed torch CUDA issue |
+| Use explicit `/roboscene_env/bin/python3` in shell script | Still loads colmap_env gdino |
+
+### Fixes to Try Next
+1. **Check actual transformers version installed** in roboscene_env:
+   ```bash
+   /scratch0/jrameshs/roboscene_env/bin/pip show transformers | grep Version
+   ```
+   If >4.35, downgrade: `pip install "transformers==4.33.0" --force-reinstall`
+
+2. **Patch bertwarper.py directly** (most reliable fix):
+   ```bash
+   GDINO_PATH=$(/scratch0/jrameshs/roboscene_env/bin/python3 -c \
+     "import groundingdino; print(groundingdino.__file__)")
+   BERTWARPER=$(dirname $GDINO_PATH)/models/GroundingDINO/bertwarper.py
+   # Line 29: change attribute grab to method bind
+   sed -i 's/self.get_head_mask = bert_model.get_head_mask/self.get_head_mask = bert_model.get_head_mask if hasattr(bert_model, "get_head_mask") else bert_model.base_model.get_head_mask/' $BERTWARPER
+   ```
+
+3. **Skip GroundingDINO entirely** — use existing semantic JSONs from v1
+   (317 frames, 4-digit names) and just re-run paint + lift with colmap_v3 poses.
+   The semantic JSONs cover the same room objects. Frame name mismatch (4→5 digit)
+   can be handled by a mapping script.
+
+4. **Use OWL-ViT instead of GroundingDINO** — alternative open-vocabulary detector
+   that doesn't have the BERT compatibility issue.
+
+### Recommended Next Step
+Option 3 (use existing semantic JSONs) is the fastest path to unblocking:
+- We already have 317 semantic JSONs in `outputs/semantic/`
+- We need to map `frame_0001` → nearest `frame_00001` in colmap_v3
+- Run paint_semantic_gaussians.py with colmap_v3 poses
+- This gives semantic labels on splat_v3 within 30 min, no GPU needed
+
+---
+
 ## Phase C — Multi-Criterion Floater Removal (1-2h, Mac)
 
 ### Why previous methods failed
