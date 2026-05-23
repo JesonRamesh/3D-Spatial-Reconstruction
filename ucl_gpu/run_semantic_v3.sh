@@ -161,10 +161,9 @@ else
 
     python3 scripts/lift_semantics_3d.py \
         --semantic_dir   "$SEMAN_OUT" \
-        --cameras_bin    "$COLMAP_DIR/cameras.bin" \
-        --images_bin     "$COLMAP_DIR/images.bin" \
-        --output_dir     outputs/ \
-        --output_suffix  "_v3"
+        --colmap_dir     "$COLMAP_DIR" \
+        --pointcloud     "$SPLAT_PLY" \
+        --output_file    "outputs/objects_3d_v3.json"
 
     echo "      Done: $OBJECTS_JSON"
 fi
