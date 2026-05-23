@@ -239,8 +239,10 @@ import * as GS from
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 const SPLAT_CANDIDATES = [
-  '/outputs/splat_video_v2/scene_room_clean.splat',
+  '/outputs/splat_v3/scene_clean.splat',
+  '/outputs/splat_v3/scene.splat',
   '/outputs/splat_video_v2/scene_full.splat',
+  '/outputs/splat_video_v2/scene_room_clean.splat',
   '/outputs/splat_video_v2/scene_pruned.splat',
   '/outputs/splat_video_v2/scene.splat',
   '/outputs/scene_semantic_pruned.splat',
@@ -257,8 +259,8 @@ const COLORS = {
   door:'#DEB887', window:'#87CEEB',
 };
 
-const HOME_POS  = [-0.03,  0.30,  1.5];
-const HOME_LOOK = [-0.03,  0.30, -0.55];
+const HOME_POS  = [ 0.30,  0.31, -0.56];
+const HOME_LOOK = [ 0.00,  0.00,  0.00];
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let viewer   = null;
@@ -329,8 +331,8 @@ window.resetCam = resetCam;
 
 // ── Intro orbit ─────────────────────────────────────────────────────────────────
 // Camera sweeps ~100° around the room center, then returns to home.
-const INTRO_CTR = new THREE.Vector3(-0.03, 0.30, -0.55);
-const INTRO_R   = 2.0;
+const INTRO_CTR = new THREE.Vector3( 0.00, 0.00,  0.00);
+const INTRO_R   = 0.9;
 
 function tickIntro(now) {
   if (!cam()) return;
@@ -589,7 +591,7 @@ async function main() {
 
   // Create viewer
   viewer = new GS.Viewer({
-    cameraUp:              [0, 0, 1],
+    cameraUp:              [0, 1, 0],
     initialCameraPosition: HOME_POS,
     initialCameraLookAt:   HOME_LOOK,
     selfDrivenMode:        true,
@@ -616,14 +618,29 @@ async function main() {
     viewer.controls.movementSpeed = 2.0;
     viewer.controls.keyboardMovementSpeed = 2.0;
   }
-  // Also try after a short delay (controls may init async)
-  setTimeout(() => {
-    if (viewer.controls) {
-      viewer.controls.movementSpeed = 2.0;
-      viewer.controls.keyboardMovementSpeed = 2.0;
-      if (viewer.controls.zoomSpeed !== undefined) viewer.controls.zoomSpeed = 3.0;
-    }
-  }, 1000);
+  // Force correct up axis and orbit behaviour after controls init
+  function fixControls() {
+    const ctrl = viewer.controls;
+    const cam  = viewer.camera;
+    if (!ctrl || !cam) return;
+    // Force Y-up on the Three.js camera
+    cam.up.set(0, 1, 0);
+    // If OrbitControls is available, force its up vector too
+    if (ctrl.object) ctrl.object.up.set(0, 1, 0);
+    // screenSpacePanning=false means orbit rotates around the up axis (correct)
+    if (ctrl.screenSpacePanning !== undefined) ctrl.screenSpacePanning = false;
+    // Remove polar angle limits so camera can rotate freely
+    if (ctrl.minPolarAngle !== undefined) ctrl.minPolarAngle = 0;
+    if (ctrl.maxPolarAngle !== undefined) ctrl.maxPolarAngle = Math.PI;
+    // Speed
+    viewer.controls.movementSpeed = 2.0;
+    viewer.controls.keyboardMovementSpeed = 2.0;
+    if (ctrl.zoomSpeed !== undefined) ctrl.zoomSpeed = 3.0;
+    if (ctrl.update) ctrl.update();
+  }
+  fixControls();
+  setTimeout(fixControls, 500);
+  setTimeout(fixControls, 1500);
 
   finishLoad();
 
