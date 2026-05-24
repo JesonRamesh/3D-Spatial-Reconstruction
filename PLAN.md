@@ -727,15 +727,102 @@ Work through these in order. Each step is independently verifiable.
 
 - [x] **Orbit root cause diagnosed** — scene_yup rotation was insufficient (see Session 5 log)
 - [x] **Re-train decision made** — `splat_v4` with `--orientation-method up` on Bluestreak
-- [ ] **Run splat_v4 training on Bluestreak** (`ucl_gpu/run_splat_v4.sh`) — ~3h
-- [ ] Download `splat_v4/scene.ply` + `colmap_v4/transforms.json` to Mac
-- [ ] Convert `scene.ply → scene.splat`, verify orbit in local viewer
+- [x] **splat_v4 training complete** — 2,410,031 Gaussians, 571MB, 60K steps
+- [x] Download `splat_v4/scene.ply` + `colmap_v4/transforms.json` to Mac ✅
+- [ ] **NEXT: Verify Y-up** — convert to .splat, check orbit in local viewer
 - [ ] Re-run semantic painting on `splat_v4/scene.ply`
-- [ ] Re-run `fix_volumes.py` on new semantic PLY
+- [ ] Re-run `fix_volumes.py` on new semantic PLY → `objects_3d_v4.json`
 - [ ] Update viewer `SPLAT_CANDIDATES` to load `splat_v4` files
 - [ ] **Fix 4** — Upload splat_v4 files to HF Dataset, push Space
 - [ ] **Fix 5** — Update README.md with final demo link
 - [ ] Submit: GitHub repo URL + HF Space URL
+
+---
+
+## IMMEDIATE NEXT STEPS (start of next session)
+
+### Step 1 — Verify Y-up orbit (5 min)
+```bash
+cd ~/Downloads/3D-Spatial-Reconstruction
+
+# Convert to .splat
+python3 scripts/convert_to_splat.py \
+  --input outputs/splat_v4/scene.ply \
+  --output outputs/splat_v4/scene.splat
+
+# Start viewer
+python3 open_viewer.py
+# Open http://localhost:8080/app/static/index.html
+# UPDATE index.html first: change SPLAT_CANDIDATES[0] to /outputs/splat_v4/scene.splat
+# Test: horizontal drag should orbit like a lazy-Susan around vertical axis
+```
+
+### Step 2 — Re-run semantic painting on splat_v4 (~30 min, CPU)
+```bash
+python3 scripts/paint_semantic_gaussians.py \
+  --splat_ply outputs/splat_v4/scene.ply \
+  --semantic_dir outputs/semantic_v3 \
+  --output_ply outputs/splat_v4/scene_semantic.ply \
+  --conf_threshold 0.35 \
+  --min_votes 3 \
+  --max_mask_coverage 0.20
+
+python3 scripts/convert_to_splat.py \
+  --input outputs/splat_v4/scene_semantic.ply \
+  --output outputs/splat_v4/scene_semantic.splat
+```
+
+### Step 3 — Fix volumes
+```bash
+python3 scripts/fix_volumes.py \
+  --semantic_ply outputs/splat_v4/scene_semantic.ply \
+  --objects_json outputs/objects_3d_v3.json \
+  --output_json outputs/objects_3d_v4.json \
+  --apply
+```
+
+### Step 4 — Update viewer to load splat_v4
+Edit `app/static/index.html` — update `SPLAT_CANDIDATES` and `OBJECTS_URL`:
+```javascript
+const SPLAT_CANDIDATES = [
+  '/outputs/splat_v4/scene_semantic.splat',
+  '/outputs/splat_v4/scene.splat',
+  // ... rest as fallback
+];
+const OBJECTS_URL = '/outputs/objects_3d_v4.json';
+```
+
+### Step 5 — Deploy to HF Spaces
+```bash
+# Upload splat files to HF Dataset
+huggingface-cli login
+python3 - <<'EOF'
+from huggingface_hub import HfApi
+api = HfApi()
+api.create_repo(repo_id="jrameshs/roboscene-data", repo_type="dataset", private=False, exist_ok=True)
+for fname in ["scene.splat", "scene_semantic.splat"]:
+    api.upload_file(
+        path_or_fileobj=f"outputs/splat_v4/{fname}",
+        path_in_repo=fname,
+        repo_id="jrameshs/roboscene-data",
+        repo_type="dataset"
+    )
+    print(f"Uploaded {fname}")
+EOF
+
+# Push HF Space
+cd hf_space/
+git init
+git remote add origin https://huggingface.co/spaces/jrameshs/roboscene-plus
+git add .
+git commit -m "Initial deploy: RoboScene+ 3D viewer"
+git push origin main
+```
+
+### Step 6 — Write README.md
+See Session 10 prompt in CLAUDE.md for full spec.
+Key sections: demo link, pipeline diagram, confidence map as novel contribution,
+design choices (VGGT, gsplat, open-vocab semantics, Claude API).
 
 ---
 
@@ -989,11 +1076,13 @@ tail -f logs/splat_v4.log
 during data loading, even though our `transforms.json` was already manually
 pre-aligned. Double-alignment is harmless (second rotation is near-identity).
 
-### Training status
-- Started: Sat May 24 ~00:15 BST
-- Image caching confirmed working
-- Expected completion: ~03:00 BST
-- Log: `/scratch0/jrameshs/roboscene-plus/logs/splat_v4.log`
+### Training status — ✅ COMPLETE
+- Started: Sat May 24 00:15 BST
+- Finished: Sat May 24 10:05 BST (~10h — longer than expected due to image caching)
+- Checkpoint: `outputs/splat_v4/unnamed/splatfacto/2026-05-24_000820/nerfstudio_models/step-000059999.ckpt`
+- Exported: `outputs/splat_v4/scene.ply` — 571MB, 2,410,031 Gaussians (1,287,806 low-opacity pruned)
+- Downloaded to Mac: `outputs/splat_v4/scene.ply` ✅
+- Downloaded to Mac: `data/colmap_v4/transforms.json` ✅
 
 ### Check training progress
 ```bash
