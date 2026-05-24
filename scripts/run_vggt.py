@@ -1,23 +1,4 @@
-#!/usr/bin/env python3
-"""
-RoboScene+ Session 2: VGGT 3D Reconstruction
-==============================================
-
-Runs VGGT (CVPR 2025 Best Paper) on extracted frames to produce:
-  - COLMAP sparse reconstruction (cameras.bin, images.bin, points3D.bin)
-  - Per-frame depth maps as .npy files
-  - Camera poses as JSON (4x4 extrinsic matrices)
-  - Point cloud as .ply for quick visualisation
-
-Supports CUDA → MPS → CPU automatic device fallback.
-MPS fallback env var is set before any torch import.
-
-Usage:
-    python scripts/run_vggt.py                              # defaults from config.yaml
-    python scripts/run_vggt.py --dry_run                    # first 10 frames only
-    python scripts/run_vggt.py --frames_dir data/frames --output_dir data/vggt_out
-    python scripts/run_vggt.py --batch_size 10 --device mps
-"""
+"""Run VGGT on extracted frames to produce camera_poses.json and per-frame depth maps."""
 
 # ── MPS / OpenMP env vars MUST be set before any torch import ──────────
 import os

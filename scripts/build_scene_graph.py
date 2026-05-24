@@ -1,44 +1,4 @@
-#!/usr/bin/env python3
-"""
-build_scene_graph.py  –  Session 8 Part A: Scene Graph Construction
-====================================================================
-Loads outputs/objects_3d.json (with confidence + provenance fields from
-Session 6) and builds a spatial scene graph saved as outputs/scene_graph.json.
-
-Node format:
-    {
-      "id": "bed",
-      "label": "bed",
-      "position_3d": [x, y, z],
-      "bbox_min": [x, y, z],
-      "bbox_max": [x, y, z],
-      "volume_m3": float,
-      "reconstruction_confidence": float,
-      "provenance": "observed"|"sparse"|"inferred",
-      "frames_seen": int
-    }
-
-Spatial edges computed automatically:
-    on_top_of  – A centroid Y > B bbox_max Y AND A XZ within B bbox XZ ± 0.15 m
-    next_to    – centroid distance < 0.8 m (not on_top_of)
-    near_wall  – centroid within 0.3 m of any scene bbox face
-    between    – A XZ centroid lies between B and C XZ centroids ± 0.3 m
-
-Room summary node:
-    {
-      "room_dimensions_m": [w, h, d],
-      "num_objects": 10,
-      "num_sparse_objects": N,
-      "num_inferred_objects": N,
-      "navigability_coverage_pct": 34.1
-    }
-
-Usage:
-    python scripts/build_scene_graph.py \
-        --objects_file  outputs/objects_3d.json \
-        --metadata_file outputs/confidence_metadata.json \
-        --output        outputs/scene_graph.json
-"""
+"""Build a spatial scene graph from objects_3d.json and save to scene_graph.json."""
 
 import argparse
 import json

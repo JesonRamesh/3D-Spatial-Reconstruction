@@ -1,12 +1,4 @@
-#!/usr/bin/env python3
-"""
-COLMAP binary file writer.
-
-Writes cameras.bin, images.bin, and points3D.bin in COLMAP's native binary format.
-No dependency on pycolmap — works with any version of downstream tools.
-
-Reference: https://colmap.github.io/format.html#binary-format
-"""
+"""Read and write COLMAP binary files (cameras.bin, images.bin, points3D.bin)."""
 
 import struct
 import numpy as np

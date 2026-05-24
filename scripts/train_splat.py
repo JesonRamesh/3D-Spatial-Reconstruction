@@ -1,33 +1,4 @@
-#!/usr/bin/env python3
-"""
-RoboScene+ Session 3: Gaussian Splatting Training
-===================================================
-
-Trains a 3D Gaussian Splat from VGGT's COLMAP-format output using
-gsplat's official simple_trainer.py example script.
-
-Approach:
-  The `python -m gsplat.scripts.simple_trainer` entrypoint does NOT exist
-  in gsplat >= 1.4. Instead we download the official example trainer from
-  the gsplat GitHub repo (pinned to v1.3.0 tag for reproducibility) and
-  run it as a standalone script via subprocess using sys.executable.
-
-  The examples/ directory is cloned once to scripts/gsplat_examples/ and
-  reused on subsequent runs.
-
-Workflow:
-  1. Log nvidia-smi GPU info at start
-  2. Download gsplat example trainer (if not cached)
-  3. Launch simple_trainer.py via subprocess (sys.executable)
-  4. After training: locate output .ply, copy to outputs/splat/scene.ply
-  5. Parse training log for final PSNR
-
-Usage:
-    python scripts/train_splat.py
-    python scripts/train_splat.py --colmap_dir data/vggt_out/ --output_dir outputs/splat/
-    python scripts/train_splat.py --iterations 30000
-    python scripts/train_splat.py --colmap_dir /scratch0/jrameshs/roboscene-plus/data/vggt_out/
-"""
+"""Train a 3D Gaussian Splat from COLMAP data using nerfstudio splatfacto."""
 
 import argparse
 import glob

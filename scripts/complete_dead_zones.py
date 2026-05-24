@@ -1,30 +1,4 @@
-#!/usr/bin/env python3
-"""
-complete_dead_zones.py  –  Session 7: Dead Zone Identification & Inpainting
-===========================================================================
-Loads a 3-D confidence map, finds low-confidence "dead zones" using connected-
-component analysis, projects each zone centroid into the nearest keyframe
-image, and runs LaMa inpainting to demonstrate hole-completion.
-
-Usage
------
-python scripts/complete_dead_zones.py \
-    --confidence_map   outputs/confidence_map.npy \
-    --confidence_metadata outputs/confidence_metadata.json \
-    --splat_dir        outputs/splat_mast3r_v2/ \
-    --output_dir       outputs/dead_zones/ \
-    [--min_zone_voxels 200] \
-    [--max_zones 5]
-
-Future Work
------------
-Back-projecting inpainted pixels into new 3-D Gaussians (or splat primitives)
-is not implemented here.  The inpainting output is a 2-D demonstration only.
-A full implementation would:
-  1. Unproject each inpainted pixel through the camera model to a 3-D ray.
-  2. Place a new Gaussian at the ray-depth predicted by a depth estimator.
-  3. Merge the new Gaussians into the existing splat file.
-"""
+"""Identify low-confidence dead zones in the voxel grid and inpaint them with LaMa."""
 
 import argparse
 import json

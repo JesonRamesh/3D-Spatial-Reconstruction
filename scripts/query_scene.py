@@ -1,21 +1,4 @@
-#!/usr/bin/env python3
-"""
-query_scene.py  –  Session 8 Part B: Natural Language Scene Query Interface
-============================================================================
-Loads outputs/scene_graph.json and provides a natural-language query interface
-powered by the Anthropic Claude API (claude-sonnet-4-5, streaming).
-
-Standalone interactive mode:
-    python scripts/query_scene.py
-    python scripts/query_scene.py --scene_graph outputs/scene_graph.json
-    python scripts/query_scene.py --question "Where is the laptop?"
-
-Importable function for Gradio app (Session 9):
-    from scripts.query_scene import query_scene, EXAMPLE_QUERIES
-
-Environment:
-    ANTHROPIC_API_KEY   – required (never hardcode)
-"""
+"""Natural language scene query interface over scene_graph.json using the Anthropic Claude API."""
 
 import argparse
 import json

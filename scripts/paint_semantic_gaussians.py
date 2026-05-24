@@ -1,27 +1,4 @@
-#!/usr/bin/env python3
-"""
-paint_semantic_gaussians.py
-
-Colors each Gaussian in the 3DGS splat by its semantic class.
-
-Pipeline
---------
-1. Load scene.ply (4.35M Gaussians, binary PLY, float32 properties)
-2. For each of the 54 keyframes that have both a COLMAP pose and a
-   semantic JSON:
-   a. Decode SAM2 masks → label image (H×W uint8, 0=unlabeled, 1..N=class)
-   b. Project all Gaussians onto the image plane (vectorized numpy)
-   c. For each Gaussian that lands inside a labeled pixel: vote for that class
-3. Assign winning class per Gaussian (min_votes threshold)
-4. Modify f_dc_0/1/2 → class SH color; zero f_rest_* for labeled Gaussians
-   Dim unlabeled Gaussians to 20% brightness
-5. Write outputs/scene_semantic.ply + outputs/semantic_stats.json
-
-Usage
------
-    python scripts/paint_semantic_gaussians.py
-    python scripts/paint_semantic_gaussians.py --min_votes 1 --max_frames 10
-"""
+"""Colour each Gaussian in scene.ply by its semantic class via SAM2 mask projection."""
 
 import argparse
 import json

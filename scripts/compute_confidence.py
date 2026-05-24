@@ -1,22 +1,4 @@
-#!/usr/bin/env python3
-"""
-compute_confidence.py – Session 6: Confidence-Aware Scene Analysis
-Novel contribution: voxel-level reconstruction confidence from point density
-and camera coverage, producing a navigability map for robotic scene understanding.
-
-Usage:
-    python scripts/compute_confidence.py \
-        --splat_ply outputs/splat_mast3r_v2/scene.ply \
-        --point_cloud outputs/mast3r_out/room_video.ply \
-        --poses_file data/vggt_out/camera_poses.json \
-        --objects_file outputs/objects_3d.json \
-        --output_dir outputs/ \
-        --voxel_size 0.05
-
-Pose file formats supported:
-  - TUM format (.txt):  timestamp tx ty tz qx qy qz qw  (one pose per line)
-  - VGGT format (.json): {"frame_XXXX.jpg": {"cam_to_world_4x4": [[...]], ...}, ...}
-"""
+"""Compute per-voxel confidence = 0.6 * point_density + 0.4 * camera_coverage."""
 
 import argparse
 import json

@@ -1,12 +1,4 @@
-#!/usr/bin/env python3
-"""
-open_viewer.py — One-command standalone 3D viewer launcher.
-
-Usage:
-    python open_viewer.py              # port 8080, auto-opens browser
-    python open_viewer.py --port 9000
-    python open_viewer.py --no-browser
-"""
+"""Launch a local HTTP server to serve the 3D viewer at http://localhost:8080."""
 
 import argparse
 import http.server

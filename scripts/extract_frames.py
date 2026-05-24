@@ -1,17 +1,4 @@
-#!/usr/bin/env python3
-"""
-RoboScene+ Session 1: Frame Extraction
-=======================================
-
-Extracts frames from a room video at a configurable FPS rate using ffmpeg-python.
-Outputs sequentially named JPG files (frame_0001.jpg, frame_0002.jpg, ...) plus
-a metadata summary.
-
-Usage:
-    python scripts/01_extract_frames.py
-    python scripts/01_extract_frames.py --video_path room.MOV --output_dir data/frames --fps 2.0
-    python scripts/01_extract_frames.py --help
-"""
+"""Extract frames from a room video at a configurable FPS using ffmpeg."""
 
 import argparse
 import json

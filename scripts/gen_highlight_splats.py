@@ -1,9 +1,4 @@
-#!/usr/bin/env python3
-"""
-gen_highlight_splats.py
-Extract per-object Gaussians from scene_semantic.ply and write
-a vivid-color .splat for each class, used for blinking highlight in viewer.
-"""
+"""Generate per-object highlight .splat files from scene_semantic.ply."""
 import numpy as np
 import json
 import os

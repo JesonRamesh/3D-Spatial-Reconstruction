@@ -1,14 +1,4 @@
-"""
-convert_to_splat.py  —  Convert a 3DGS .ply to the compact .splat binary format.
-
-The .splat format (used by mkkellogg/GaussianSplats3D.js) stores 32 bytes per Gaussian:
-  bytes  0-11  position      float32 × 3   (x, y, z)
-  bytes 12-23  scale         float32 × 3   (exp of log_scale from PLY)
-  bytes 24-27  RGBA color    uint8 × 4     (sigmoid(f_dc * SH_C0 + 0.5) * 255, sigmoid(opacity) * 255)
-  bytes 28-31  rotation      uint8 × 4     ((quat + 1) / 2 * 255)
-
-For a 4.35M Gaussian scene this shrinks ~1.08 GB → ~140 MB (7.7×).
-"""
+"""Convert a 3DGS .ply to the compact .splat binary format used by GaussianSplats3D.js."""
 
 import argparse
 import struct

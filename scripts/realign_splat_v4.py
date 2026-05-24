@@ -1,24 +1,4 @@
-#!/usr/bin/env python3
-"""
-realign_splat_v4.py — Align outputs/splat_v4/scene.ply to Y-up with floor flat.
-
-The nerfstudio PLY uses Z-up ("comment Vertical Axis: z" in header).
-The viewer expects Y-up.  Fix = two rotations composed:
-
-  Step A: Z-up → Y-up  (rotate -90° around X axis)
-          This maps  Z→Y,  Y→-Z,  X→X
-          Matrix: [[1,0,0],[0,0,1],[0,-1,0]]
-
-  Step B: Small residual tilt correction  (~2°)
-          Fit floor plane to lowest 1% hi-opacity Gaussians AFTER Step A.
-          Rotate that floor normal → [0,-1,0] using rotation_between().
-          Constrained to keep horizontal axes stable.
-
-All Gaussian positions and orientation quaternions (rot_0..3) are rotated
-using the vectorised batch quaternion method.
-
-Output: outputs/splat_v4/scene_aligned.ply
-"""
+"""Align scene.ply to Y-up with a flat floor using SVD tilt correction."""
 
 import sys
 import struct

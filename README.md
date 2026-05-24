@@ -35,7 +35,9 @@ RoboScene+ takes a short phone video of an indoor room and produces:
 ## Pipeline
 
 ```
-room_video.MOV  (641 frames, 1080p)
+room_video_v2.MOV  (641 frames, 1080p)
+  │
+  ├─ VGGT (CVPR 2025)  →  camera_poses.json  (641 dense camera poses)
   │
   ├─ COLMAP feature matching + SfM  →  539-frame sparse reconstruction
   │
@@ -45,7 +47,7 @@ room_video.MOV  (641 frames, 1080p)
   ├─ Grounded SAM2 per-frame masks  →  semantic_class.npy  (per-Gaussian labels)
   │     └─ outputs/splat_v4/scene_semantic.splat  (semantically tinted)
   │
-  ├─ Confidence map  →  0.6 × point_density + 0.4 × camera_coverage
+  ├─ Confidence map  →  0.6 × VGGT_point_density + 0.4 × camera_coverage
   │     └─ outputs/confidence_map.npy
   │
   ├─ Scene graph  →  outputs/scene_graph.json

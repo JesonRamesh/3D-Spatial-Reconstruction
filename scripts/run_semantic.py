@@ -1,15 +1,4 @@
-"""
-run_semantic.py – Grounded SAM2 semantic segmentation on keyframe images.
-
-Usage
------
-python scripts/run_semantic.py \
-    --frames_dir  data/mast3r_out/images \
-    --output_dir  outputs/semantic \
-    --labels      "bed,desk,chair,laptop,shelf,door,window,fan,lamp,monitor" \
-    --device      cuda \
-    --weights_dir /scratch0/jrameshs/gdino_weights
-"""
+"""Run Grounded SAM2 + GroundingDINO on keyframe images to produce per-frame mask JSONs."""
 
 import os
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")

@@ -1,29 +1,4 @@
-#!/usr/bin/env python3
-"""
-lift_semantics_3d.py - Session 5 (hybrid point-cloud projection)
-
-Projects the MASt3R-SLAM point cloud into each keyframe semantic mask
-to assign correctly-scaled 3D points to semantic labels.
-The MASt3R point cloud is metric (~3-4 m room scale).
-
-Pipeline
---------
-1. Load outputs/mast3r_out/room_video.ply  (pure-numpy PLY reader)
-2. Subsample to --max_points for speed  (default 500k)
-3. Load COLMAP cameras.bin + images.bin from data/mast3r_out/sparse/0/
-4. For each keyframe that has a semantic JSON:
-   a. w2c pose: R_w2c, t_w2c from COLMAP images.bin (qvec + tvec)
-   b. Project all points:  p_cam = R_w2c @ p_world + t_w2c
-   c. Keep z > 0  (in front of camera)
-   d. Perspective divide:  u = fx*x/z+cx,  v = fy*y/z+cy
-   e. For each label: collect world points whose pixel (u,v) is in mask
-5. Deduplicate, remove outliers (2-sigma), compute centroid/bbox/volume
-6. Save outputs/objects_3d.json  +  outputs/object_positions_2d.png
-
-Usage
------
-    python scripts/lift_semantics_3d.py [options]
-"""
+"""Lift 2D semantic masks to 3D by projecting the point cloud into each keyframe."""
 
 import argparse
 import json

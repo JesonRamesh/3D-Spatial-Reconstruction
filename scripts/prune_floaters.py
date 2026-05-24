@@ -1,18 +1,4 @@
-#!/usr/bin/env python3
-"""
-prune_floaters.py — Remove floater Gaussians from scene_aligned.ply.
-
-Three-stage pruning pipeline:
-  Step 1 — Opacity filter:    sigmoid(opacity) > OPACITY_THRESH
-  Step 2 — Density filter:    ≥ MIN_NEIGHBOURS within radius DENSITY_RADIUS
-  Step 3 — Bounding box clip: drop Gaussians outside room inner bbox
-
-Pure numpy + scipy (no plyfile dependency).
-Same PLY reader/writer pattern as realign_splat_v4.py.
-
-Input:  outputs/splat_v4/scene_aligned.ply
-Output: outputs/splat_v4/scene_pruned.ply
-"""
+"""Remove floater Gaussians by opacity threshold, density filter, and bounding box clip."""
 
 import sys
 import numpy as np
