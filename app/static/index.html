@@ -632,6 +632,28 @@ function setProgress(pct, msg) {
   if (msg) ldMsg.textContent = msg;
 }
 
+// Track download progress without intercepting the actual load —
+// runs a parallel streaming fetch just to read bytes received.
+async function trackDownloadProgress(url, onProgress) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok || !resp.body) return;
+    const total = parseInt(resp.headers.get('content-length') || '0', 10);
+    const reader = resp.body.getReader();
+    let received = 0;
+    const mb = n => (n / 1048576).toFixed(1);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.length;
+      const pct = total > 0 ? (received / total) * 90 : Math.min(85, received / 600000);
+      onProgress(pct, total > 0
+        ? `Downloading scene… ${mb(received)} / ${mb(total)} MB`
+        : `Downloading scene… ${mb(received)} MB`);
+    }
+  } catch (_) { /* silently ignore — main load still runs */ }
+}
+
 function finishLoad() {
   setProgress(100, 'Ready!');
   setTimeout(() => {
@@ -679,30 +701,6 @@ async function bestSplatUrl() {
   return null;
 }
 
-// Download splat with real progress reporting, return an object URL
-async function downloadSplatWithProgress(url) {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching splat`);
-  const total = parseInt(resp.headers.get('content-length') || '0', 10);
-  const reader = resp.body.getReader();
-  const chunks = [];
-  let received = 0;
-  const mb = n => (n / 1048576).toFixed(1) + ' MB';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    if (total > 0) {
-      const pct = 10 + (received / total) * 85;  // 10–95%
-      setProgress(pct, `Downloading scene… ${mb(received)} / ${mb(total)}`);
-    } else {
-      setProgress(50, `Downloading scene… ${mb(received)}`);
-    }
-  }
-  const blob = new Blob(chunks);
-  return URL.createObjectURL(blob);
-}
 
 // ── Main ────────────────────────────────────────────────────────────────────────
 async function main() {
@@ -724,20 +722,12 @@ async function main() {
   }
 
   document.getElementById('load-indicator').textContent = splatUrl.split('/').pop();
-  setProgress(10, 'Starting download…');
+  setProgress(5, 'Starting download…');
 
-  let loadUrl = splatUrl;
-  // For remote URLs stream with progress; local files load directly
+  // Run progress tracker in parallel — doesn't block or intercept the main load
   if (splatUrl.startsWith('http')) {
-    try {
-      loadUrl = await downloadSplatWithProgress(splatUrl);
-    } catch (err) {
-      showError('Download failed: ' + String(err));
-      return;
-    }
+    trackDownloadProgress(splatUrl, setProgress);
   }
-
-  setProgress(96, 'Building scene…');
 
   viewer = new GS.Viewer({
     cameraUp:              [0, 1, 0],
