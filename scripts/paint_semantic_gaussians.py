@@ -325,8 +325,12 @@ def main():
         help="Minimum SAM2 confidence to use a mask (default 0.30)")
     parser.add_argument("--max_mask_coverage", type=float, default=0.25,
         help="Maximum fraction of image a mask can cover (default 0.25)")
-    parser.add_argument("--dim_factor", type=float, default=0.20,
-        help="Brightness multiplier for unlabeled Gaussians (default 0.20)")
+    parser.add_argument("--dim_factor", type=float, default=1.0,
+        help="Brightness multiplier for unlabeled Gaussians (default 1.0 = no dimming)")
+    parser.add_argument("--tint_strength", type=float, default=0.18,
+        help="How strongly to tint labeled Gaussians with class color (0=invisible, 1=full replace, default 0.18)")
+    parser.add_argument("--opacity_boost", type=float, default=0.0,
+        help="Add this value to raw opacity logit for ALL Gaussians (e.g. 2.0 shifts sigmoid from 0.05→0.88). Default 0 = no change.")
     parser.add_argument("--centroid_filter", action="store_true", default=False,
         help="Enable centroid-constrained voting (only use after fix_volumes.py "
              "has produced corrected centroids in objects_3d_v3.json)")
@@ -341,6 +345,7 @@ def main():
     if not transforms_json.exists():
         # Try common locations
         for candidate in [
+            ROOT / 'data/colmap_v4/transforms.json',
             ROOT / 'data/colmap_v3/transforms.json',
             ROOT / 'data/colmap_video/transforms.json',
         ]:
@@ -389,9 +394,32 @@ def main():
     print(f'[OK] {len(poses)} poses loaded from transforms.json')
 
     # ── 2. Match semantic JSONs to poses ────────────────────────────────
+    # Build a numeric-keyed lookup so frame_0001 matches frame_00001 etc.
+    poses_by_num = {}
+    for stem, pose in poses.items():
+        try:
+            poses_by_num[int(stem.replace('frame_', ''))] = (stem, pose)
+        except ValueError:
+            pass
+
     sem_dir = Path(args.semantic_dir)
     all_jsons = sorted(sem_dir.glob('frame_*.json'))
-    matched = [p for p in all_jsons if p.stem in poses]
+    matched = []
+    matched_stems = {}  # json_path -> canonical tf stem
+    for p in all_jsons:
+        try:
+            num = int(p.stem.replace('frame_', ''))
+        except ValueError:
+            continue
+        if num in poses_by_num:
+            matched.append(p)
+            matched_stems[p] = poses_by_num[num][0]  # tf stem
+    # Rebuild poses dict to also be keyed by semantic stem for downstream lookup
+    for p in matched:
+        sem_stem = p.stem
+        tf_stem  = matched_stems[p]
+        if sem_stem not in poses and tf_stem in poses:
+            poses[sem_stem] = poses[tf_stem]
     if args.max_frames:
         matched = matched[:args.max_frames]
     print(f'[OK] {len(matched)} frames with pose + semantic JSON')
@@ -579,27 +607,37 @@ def main():
             sys.exit(f"[error] Expected property '{col}' not found in PLY. "
                      f"Available: {props}")
 
-    # --- Apply to labeled Gaussians ---
-    # Build arrays of target f_dc values for each labeled Gaussian
+    # --- Opacity boost (applied before color changes) ---
+    if args.opacity_boost != 0.0:
+        gaussians['opacity'] = (gaussians['opacity'].astype(np.float32) + args.opacity_boost).astype(np.float32)
+        # Report new opacity distribution
+        op_new = 1.0 / (1.0 + np.exp(-gaussians['opacity'].astype(np.float64)))
+        print(f"[OK] Opacity boost +{args.opacity_boost}: "
+              f"mean {op_new.mean():.3f}  >0.5: {(op_new>0.5).mean()*100:.1f}%  "
+              f">0.8: {(op_new>0.8).mean()*100:.1f}%")
+
+    # --- Apply subtle tint to labeled Gaussians ---
+    # Strategy: blend original f_dc with class color using tint_strength.
+    # This preserves the photorealistic appearance while adding a colour hint.
+    # f_dc_new = (1 - tint) * f_dc_orig + tint * class_f_dc
+    # f_rest is kept unchanged → view-dependent shading preserved.
     labeled_indices = np.where(is_labeled)[0]
     target_rgb = CLASS_RGB[semantic_class[labeled_indices]]   # (M, 3) float32
     target_sh  = rgb_to_sh_dc(target_rgb.astype(np.float32)) # (M, 3)
+    t = float(args.tint_strength)
 
-    gaussians["f_dc_0"][labeled_indices] = target_sh[:, 0]
-    gaussians["f_dc_1"][labeled_indices] = target_sh[:, 1]
-    gaussians["f_dc_2"][labeled_indices] = target_sh[:, 2]
+    gaussians["f_dc_0"][labeled_indices] = (
+        (1.0 - t) * gaussians["f_dc_0"][labeled_indices] + t * target_sh[:, 0])
+    gaussians["f_dc_1"][labeled_indices] = (
+        (1.0 - t) * gaussians["f_dc_1"][labeled_indices] + t * target_sh[:, 1])
+    gaussians["f_dc_2"][labeled_indices] = (
+        (1.0 - t) * gaussians["f_dc_2"][labeled_indices] + t * target_sh[:, 2])
+    # f_rest kept as-is → preserves specular/view-dependent appearance
 
-    # Zero f_rest for labeled Gaussians → view-independent flat class color
-    for col in f_rest_cols:
-        gaussians[col][labeled_indices] = 0.0
-
-    # --- Dim unlabeled Gaussians so labeled objects pop out ---
+    # --- Optionally dim unlabeled Gaussians ---
     unlabeled_indices = np.where(~is_labeled)[0]
     if args.dim_factor < 1.0 and len(unlabeled_indices) > 0:
         for col in f_dc_cols:
-            # Dimming in SH space: dc controls base brightness.
-            # We push f_dc toward the "0.5 → grey" neutral value.
-            # Blend: dc_new = dc_old * dim + 0 * (1 - dim)
             gaussians[col][unlabeled_indices] *= args.dim_factor
 
     print(f"[OK] Colors applied  "
@@ -609,6 +647,12 @@ def main():
     # ── 7. Write output PLY ──────────────────────────────────────────────
     print(f"[...] Writing {args.output_ply} ...")
     write_3dgs_ply(Path(args.output_ply), gaussians, header_bytes)
+
+    # Save exact class assignment for highlight splat generation
+    class_npy = Path(args.output_ply).parent / 'semantic_class.npy'
+    import numpy as _np
+    _np.save(str(class_npy), semantic_class.astype(_np.uint8))
+    print(f'[OK] Class map  -> {class_npy}')
 
     # ── 8. Write stats JSON ──────────────────────────────────────────────
     with open(args.stats_json, "w") as f:

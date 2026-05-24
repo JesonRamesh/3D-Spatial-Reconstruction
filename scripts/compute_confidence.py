@@ -325,6 +325,17 @@ def _load_poses_from_json(poses_file):
         data = json.load(f)
 
     poses = []
+
+    # Handle nerfstudio transforms.json format (has 'frames' list)
+    if 'frames' in data:
+        frame_items = []
+        for frame in data['frames']:
+            fp = frame.get('file_path', '')
+            stem = fp.split('/')[-1]
+            frame_items.append((stem, {'cam_to_world_4x4': frame['transform_matrix']}))
+        frame_items.sort(key=lambda x: x[0])
+        data = dict(frame_items)
+
     for i, (frame_name, frame_data) in enumerate(sorted(data.items())):
         c2w = frame_data.get("cam_to_world_4x4")
         if c2w is None:

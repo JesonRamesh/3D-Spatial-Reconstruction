@@ -6,12 +6,13 @@
   <title>RoboScene+ · 3D Semantic Viewer</title>
   <style>
     :root {
-      --bg:      #0f0f1a;
-      --panel:   rgba(12,12,28,0.90);
-      --border:  rgba(127,119,221,0.22);
-      --accent:  #7F77DD;
-      --text:    #e0e0f0;
-      --dim:     #7070a0;
+      --bg:      #08080f;
+      --panel:   rgba(6,6,18,0.94);
+      --border:  rgba(0,212,255,0.28);
+      --accent:  #00d4ff;
+      --accent2: #b039ff;
+      --text:    #d8e8f8;
+      --dim:     #5580a0;
       --green:   #4ade80;
       --amber:   #fbbf24;
       --red:     #f87171;
@@ -22,69 +23,270 @@
     html, body { height:100%; overflow:hidden; background:var(--bg);
       font-family:'Courier New',monospace; color:var(--text); }
 
-    /* ── Canvas lives behind everything ─────────────────────── */
     canvas { position:fixed!important; inset:0; z-index:0; }
+
+    /* ── Animations ──────────────────────────────────────────── */
+    @keyframes neonPulse {
+      0%,100% { opacity:1; }
+      50%      { opacity:.55; }
+    }
+    @keyframes topbarGlow {
+      0%,100% { box-shadow: 0 2px 28px rgba(0,212,255,.28), 0 0 70px rgba(0,212,255,.06); }
+      50%      { box-shadow: 0 2px 45px rgba(0,212,255,.50), 0 0 100px rgba(0,212,255,.12); }
+    }
+    @keyframes sidebarGlow {
+      0%,100% { box-shadow: 4px 0 28px rgba(0,212,255,.18), 0 0 50px rgba(176,57,255,.06); }
+      50%      { box-shadow: 4px 0 44px rgba(0,212,255,.38), 0 0 80px rgba(176,57,255,.14); }
+    }
+    @keyframes edgeSlide {
+      0%   { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    @keyframes edgeSlideV {
+      0%   { background-position: 0 -200%; }
+      100% { background-position: 0 200%; }
+    }
+    @keyframes topbarShift {
+      0%,100% { background-position: 0% 50%; }
+      50%      { background-position: 100% 50%; }
+    }
+    @keyframes scanMove {
+      0%   { background-position: 0 0; }
+      100% { background-position: 0 60px; }
+    }
+    @keyframes barShimmer {
+      0%   { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+
+    @keyframes glitch {
+      0%,82%,100% {
+        transform:none;
+        text-shadow:0 0 18px var(--accent),0 0 35px rgba(0,212,255,.45);
+        clip-path:none;
+      }
+      84% {
+        transform:translate(-4px,0) skewX(6deg);
+        text-shadow:4px 0 #ff0090,-4px 0 var(--accent);
+        clip-path:inset(10% 0 60% 0);
+      }
+      86% {
+        transform:translate(4px,0) skewX(-4deg);
+        text-shadow:-4px 0 #ff0090, 4px 0 var(--accent);
+        clip-path:inset(50% 0 10% 0);
+      }
+      88% {
+        transform:translate(-2px,0);
+        clip-path:inset(30% 0 40% 0);
+      }
+      90% {
+        transform:none;
+        text-shadow:0 0 18px var(--accent);
+        clip-path:none;
+      }
+    }
+
+    /* ── Screen-edge vignette (subtle neon glow at viewport edges) ── */
+    #vignette {
+      position:fixed; inset:0; pointer-events:none; z-index:1;
+      background:
+        radial-gradient(ellipse at center,
+          transparent 55%,
+          rgba(0,212,255,.025) 80%,
+          rgba(0,212,255,.07) 100%);
+    }
+
+    /* ── Onboarding overlay ──────────────────────────────────── */
+    @keyframes obFloat {
+      0%,100% { transform:translateY(0); }
+      50%      { transform:translateY(-9px); }
+    }
+    @keyframes arrowBounce {
+      0%,100% { transform:translateY(0); opacity:1; }
+      50%      { transform:translateY(9px); opacity:.45; }
+    }
+    #onboarding {
+      position:fixed; inset:0; z-index:800;
+      background:rgba(7,7,14,.84);
+      backdrop-filter:blur(3px);
+      display:flex; align-items:center; justify-content:center;
+      opacity:0; pointer-events:none;
+      transition:opacity 1.1s ease-out;
+    }
+    #onboarding.visible { opacity:1; pointer-events:all; }
+    #ob-inner { text-align:center; animation:obFloat 3.2s ease-in-out infinite; }
+    .ob-glyph {
+      font-size:52px; color:var(--accent); margin-bottom:14px;
+      text-shadow:0 0 22px var(--accent),0 0 44px rgba(0,212,255,.45);
+      animation:glitch 4.8s ease-in-out infinite;
+    }
+    .ob-title {
+      font-size:26px; font-weight:700; letter-spacing:.22em;
+      color:var(--text); margin-bottom:6px;
+      text-shadow:0 0 18px rgba(0,212,255,.3);
+    }
+    .ob-sub {
+      font-size:11px; color:var(--dim); letter-spacing:.14em; margin-bottom:30px;
+    }
+    .ob-divider {
+      width:130px; height:1px; margin:0 auto 30px;
+      background:linear-gradient(90deg,transparent,var(--accent),var(--accent2),transparent);
+      box-shadow:0 0 12px var(--accent);
+    }
+    .ob-hint {
+      font-size:13px; color:var(--accent); letter-spacing:.13em;
+      text-shadow:0 0 10px var(--accent); margin-bottom:14px;
+      animation:neonPulse 2.2s ease-in-out infinite;
+    }
+    .ob-arrow {
+      font-size:24px; color:var(--accent);
+      text-shadow:0 0 12px var(--accent);
+      animation:arrowBounce 1.4s ease-in-out infinite;
+    }
 
     /* ── Top bar ─────────────────────────────────────────────── */
     #topbar {
       position:fixed; top:0; left:0; right:0; height:var(--topbar);
-      background:var(--panel); border-bottom:1px solid var(--border);
-      backdrop-filter:blur(14px); z-index:300;
+      background:linear-gradient(90deg,
+        rgba(6,6,18,.97) 0%,
+        rgba(0,18,38,.94) 35%,
+        rgba(12,4,26,.94) 65%,
+        rgba(6,6,18,.97) 100%
+      );
+      background-size:200% 100%;
+      animation:topbarShift 14s ease-in-out infinite, topbarGlow 5s ease-in-out infinite;
+      border-bottom:1px solid rgba(0,212,255,.35);
+      backdrop-filter:blur(20px);
+      z-index:300;
       display:flex; align-items:center; gap:14px; padding:0 20px;
+      overflow:hidden;
     }
-    .logo       { color:var(--accent); font-size:15px; font-weight:700; letter-spacing:.1em; }
-    .logo-tag   { color:var(--dim); font-size:10px; }
-    .spacer     { flex:1; }
+    /* Scanlines */
+    #topbar::before {
+      content:''; position:absolute; inset:0;
+      background:repeating-linear-gradient(
+        0deg, transparent, transparent 3px,
+        rgba(0,212,255,.022) 3px, rgba(0,212,255,.022) 4px
+      );
+      animation:scanMove 3.5s linear infinite;
+      pointer-events:none; z-index:0;
+    }
+    /* Sliding neon bottom edge */
+    #topbar::after {
+      content:''; position:absolute; bottom:0; left:0; right:0; height:1px;
+      background:linear-gradient(90deg,
+        transparent 0%, var(--accent) 30%, var(--accent2) 60%, transparent 100%
+      );
+      background-size:300% 100%;
+      animation:edgeSlide 4.5s linear infinite;
+      box-shadow:0 0 14px var(--accent);
+    }
+    #topbar > * { position:relative; z-index:1; }
+
+    .logo {
+      color:var(--accent); font-size:15px; font-weight:700; letter-spacing:.15em;
+      text-shadow:0 0 14px var(--accent),0 0 28px rgba(0,212,255,.45);
+      animation:neonPulse 3.5s ease-in-out infinite;
+    }
+    .logo-tag { color:var(--dim); font-size:10px; letter-spacing:.05em; }
+    .spacer    { flex:1; }
     .tbtn {
-      background:rgba(127,119,221,.12); color:var(--accent);
-      border:1px solid rgba(127,119,221,.35); border-radius:6px;
+      background:rgba(0,212,255,.07); color:var(--accent);
+      border:1px solid rgba(0,212,255,.38); border-radius:4px;
       padding:6px 16px; font:inherit; font-size:12px; cursor:pointer;
-      transition:background .18s,color .18s,border-color .18s; white-space:nowrap;
+      transition:all .2s; white-space:nowrap; letter-spacing:.06em;
+      box-shadow:0 0 10px rgba(0,212,255,.08),inset 0 0 10px rgba(0,212,255,.04);
     }
-    .tbtn:hover   { background:rgba(127,119,221,.28); }
-    .tbtn.on      { background:var(--accent); color:#fff; border-color:var(--accent); }
-    .tbtn.touring { background:#d97706; border-color:#d97706; color:#000; }
-    #load-indicator { font-size:11px; color:var(--dim); }
+    .tbtn:hover {
+      background:rgba(0,212,255,.2);
+      box-shadow:0 0 22px rgba(0,212,255,.45),inset 0 0 14px rgba(0,212,255,.1);
+      border-color:var(--accent);
+    }
+    .tbtn.on      { background:var(--accent); color:#000; font-weight:700;
+                    box-shadow:0 0 22px var(--accent); }
+    .tbtn.touring { background:#d97706; border-color:#fbbf24; color:#000;
+                    box-shadow:0 0 22px rgba(251,191,36,.5); }
+    #load-indicator { font-size:11px; color:var(--dim); letter-spacing:.05em; }
 
     /* ── Sidebar ─────────────────────────────────────────────── */
     #sidebar {
       position:fixed; top:var(--topbar); left:0; bottom:0; width:var(--sidebar);
-      background:var(--panel); border-right:1px solid var(--border);
-      backdrop-filter:blur(14px); z-index:200;
+      background:var(--panel);
+      border-right:1px solid rgba(0,212,255,.28);
+      backdrop-filter:blur(20px); z-index:200;
       display:flex; flex-direction:column; overflow:hidden;
+      animation:sidebarGlow 6s ease-in-out infinite;
     }
+    /* Scanlines */
+    #sidebar::before {
+      content:''; position:absolute; inset:0;
+      background:repeating-linear-gradient(
+        0deg, transparent, transparent 3px,
+        rgba(0,212,255,.018) 3px, rgba(0,212,255,.018) 4px
+      );
+      animation:scanMove 5s linear infinite;
+      pointer-events:none; z-index:0;
+    }
+    /* Sliding neon right edge */
+    #sidebar::after {
+      content:''; position:absolute; top:0; right:0; bottom:0; width:1px;
+      background:linear-gradient(180deg,
+        transparent 0%, var(--accent) 25%, var(--accent2) 75%, transparent 100%
+      );
+      background-size:100% 300%;
+      animation:edgeSlideV 6s linear infinite;
+      box-shadow:0 0 12px var(--accent);
+    }
+    #sidebar > * { position:relative; z-index:1; }
+
     .sec-head {
       padding:14px 16px 6px; font-size:9px; font-weight:700;
-      letter-spacing:.18em; color:var(--dim); text-transform:uppercase;
-      border-bottom:1px solid var(--border);
+      letter-spacing:.22em; color:var(--accent); text-transform:uppercase;
+      border-bottom:1px solid rgba(0,212,255,.14);
+      text-shadow:0 0 10px var(--accent);
     }
     #obj-list { flex:1; overflow-y:auto; overflow-x:hidden; }
     #obj-list::-webkit-scrollbar { width:3px; }
-    #obj-list::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+    #obj-list::-webkit-scrollbar-thumb {
+      background:rgba(0,212,255,.4); border-radius:2px;
+      box-shadow:0 0 6px var(--accent);
+    }
     .obj-row {
       display:flex; align-items:center; gap:10px; padding:11px 16px;
       cursor:pointer; border-left:3px solid transparent;
-      transition:background .15s, border-color .15s;
+      transition:background .15s,border-color .15s,box-shadow .15s;
     }
-    .obj-row:hover  { background:rgba(127,119,221,.08); }
-    .obj-row.sel    { background:rgba(127,119,221,.14); border-left-color:var(--accent); }
-    .dot  { width:13px; height:13px; border-radius:3px; flex-shrink:0; }
-    .name { flex:1; font-size:13px; text-transform:capitalize; }
+    .obj-row:hover {
+      background:rgba(0,212,255,.06);
+      border-left-color:rgba(0,212,255,.35);
+    }
+    .obj-row.sel {
+      background:rgba(0,212,255,.1);
+      border-left-color:var(--accent);
+      box-shadow:inset 4px 0 18px rgba(0,212,255,.1);
+    }
+    .dot { width:13px; height:13px; border-radius:3px; flex-shrink:0; }
+    .name { flex:1; font-size:13px; text-transform:capitalize; letter-spacing:.03em; }
     .badge {
-      font-size:9px; padding:2px 7px; border-radius:10px; font-weight:700;
+      font-size:9px; padding:2px 7px; border-radius:10px;
+      font-weight:700; letter-spacing:.06em;
     }
-    .g  { background:rgba(74,222,128,.14);  color:var(--green); }
-    .a  { background:rgba(251,191,36,.14);  color:var(--amber); }
-    .r  { background:rgba(248,113,113,.14); color:var(--red);   }
+    .g { background:rgba(74,222,128,.14); color:var(--green);
+         box-shadow:0 0 8px rgba(74,222,128,.22); }
+    .a { background:rgba(251,191,36,.14);  color:var(--amber);
+         box-shadow:0 0 8px rgba(251,191,36,.22); }
+    .r { background:rgba(248,113,113,.14); color:var(--red);
+         box-shadow:0 0 8px rgba(248,113,113,.22); }
     .chip {
       font-size:8px; padding:1px 6px; border-radius:8px;
       border:1px solid rgba(255,255,255,.1); color:var(--dim); flex-shrink:0;
     }
     #stats {
       padding:10px 16px 14px; font-size:11px; color:var(--dim);
-      line-height:2; border-top:1px solid var(--border);
+      line-height:2; border-top:1px solid rgba(0,212,255,.14);
+      letter-spacing:.04em;
     }
-    #stats strong { color:var(--text); }
+    #stats strong { color:var(--accent); text-shadow:0 0 8px var(--accent); }
 
     /* ── Tour dots ───────────────────────────────────────────── */
     #tour-dots {
@@ -92,78 +294,158 @@
       display:flex; gap:6px; z-index:250; transition:opacity .3s;
     }
     #tour-dots.hidden { opacity:0; pointer-events:none; }
-    .tdot { width:7px; height:7px; border-radius:50%;
-            background:rgba(255,255,255,.2); transition:background .3s; }
-    .tdot.on { background:var(--accent); }
+    .tdot {
+      width:7px; height:7px; border-radius:50%;
+      background:rgba(255,255,255,.15); transition:all .3s;
+    }
+    .tdot.on { background:var(--accent); box-shadow:0 0 10px var(--accent); }
 
     /* ── Info card ───────────────────────────────────────────── */
     #info-card {
       position:fixed; top:66px; right:16px; z-index:260;
-      background:var(--panel); border:1px solid var(--border);
-      border-radius:10px; padding:14px 18px; min-width:210px;
-      backdrop-filter:blur(14px);
-      transition:opacity .25s, transform .25s;
+      background:rgba(6,6,18,.96);
+      border:1px solid rgba(0,212,255,.32);
+      border-radius:6px; padding:14px 18px; min-width:210px;
+      backdrop-filter:blur(20px);
+      transition:opacity .25s,transform .25s;
+      box-shadow:0 0 28px rgba(0,212,255,.14),inset 0 0 25px rgba(0,212,255,.02);
+    }
+    /* Top accent strip */
+    #info-card::before {
+      content:''; position:absolute; top:0; left:18%; right:18%; height:1px;
+      background:linear-gradient(90deg,transparent,var(--accent),var(--accent2),transparent);
+      box-shadow:0 0 12px var(--accent);
+    }
+    /* Bottom-right corner bracket */
+    #info-card::after {
+      content:''; position:absolute; bottom:-1px; right:-1px;
+      width:14px; height:14px;
+      border-right:2px solid var(--accent2); border-bottom:2px solid var(--accent2);
+      box-shadow:3px 3px 10px rgba(176,57,255,.45);
     }
     #info-card.hidden { opacity:0; pointer-events:none; transform:translateY(-6px); }
     #info-card h3 {
       font-size:14px; color:var(--accent); margin-bottom:10px;
       padding-left:9px; text-transform:capitalize; line-height:1;
+      text-shadow:0 0 12px var(--accent); letter-spacing:.06em;
     }
-    .irow { display:flex; justify-content:space-between;
-            font-size:11px; padding:2px 0; color:var(--dim); }
+    .irow {
+      display:flex; justify-content:space-between;
+      font-size:11px; padding:2px 0; color:var(--dim); letter-spacing:.03em;
+    }
     .irow span:last-child { color:var(--text); text-align:right; }
     .close-btn {
       position:absolute; top:10px; right:12px; cursor:pointer;
       color:var(--dim); font-size:16px; line-height:1;
     }
-    .close-btn:hover { color:var(--text); }
+    .close-btn:hover { color:var(--accent); text-shadow:0 0 8px var(--accent); }
 
-    /* ── 2-D label layer ─────────────────────────────────────── */
-    #lbl-layer { position:fixed; inset:0; pointer-events:none; z-index:50; }
-    .lbl {
-      position:absolute; transform:translate(-50%,-240%);
-      background:rgba(8,8,22,.82); border:1px solid var(--border);
-      border-radius:5px; padding:3px 9px;
-      font-size:10px; white-space:nowrap; opacity:.85;
-      transition:opacity .2s, border-color .2s;
-    }
-    .lbl.sel { border-color:var(--accent); opacity:1; background:rgba(127,119,221,.2); }
+    /* ── 2-D label layer (hidden) ───────────────────────────── */
+    #lbl-layer { display:none; }
+    .lbl { display:none; }
 
     /* ── Hint bar ────────────────────────────────────────────── */
     #hint {
       position:fixed; bottom:14px; left:50%; transform:translateX(-50%);
-      background:rgba(8,8,22,.72); border:1px solid var(--border);
+      background:rgba(6,6,18,.88); border:1px solid rgba(0,212,255,.28);
       border-radius:20px; padding:5px 18px; font-size:10px; color:var(--dim);
-      pointer-events:none; z-index:200; backdrop-filter:blur(8px);
+      pointer-events:none; z-index:200; backdrop-filter:blur(10px);
+      box-shadow:0 0 16px rgba(0,212,255,.1); letter-spacing:.06em;
+    }
+
+    /* ── Camera coordinates panel ────────────────────────────── */
+    #cam-coords {
+      position:fixed; bottom:48px; right:16px; z-index:300;
+      background:rgba(6,6,18,.94);
+      border:1px solid rgba(0,212,255,.32);
+      border-radius:6px; padding:10px 14px; font-size:11px;
+      font-family:'Courier New',monospace;
+      color:#d8e8f8; line-height:1.8;
+      backdrop-filter:blur(10px); min-width:280px;
+      box-shadow:0 0 22px rgba(0,212,255,.12),inset 0 0 20px rgba(0,212,255,.02);
+    }
+    /* Top neon strip */
+    #cam-coords::before {
+      content:''; position:absolute; top:0; left:15%; right:15%; height:1px;
+      background:linear-gradient(90deg,transparent,var(--accent),transparent);
+      box-shadow:0 0 10px var(--accent);
+    }
+    /* Bottom-right corner bracket */
+    #cam-coords::after {
+      content:''; position:absolute; bottom:-1px; right:-1px;
+      width:12px; height:12px;
+      border-right:2px solid var(--accent); border-bottom:2px solid var(--accent);
+      box-shadow:3px 3px 10px rgba(0,212,255,.4);
     }
 
     /* ── Loading overlay ─────────────────────────────────────── */
     #loading {
       position:fixed; inset:0; background:var(--bg);
       display:flex; flex-direction:column; align-items:center; justify-content:center;
-      z-index:900; transition:opacity .5s;
+      z-index:900; transition:opacity .5s; overflow:hidden;
     }
-    #loading.out { opacity:0; pointer-events:none; }
-    .ld-glyph  { font-size:42px; color:var(--accent); margin-bottom:12px;
-                 animation:pulse 2s ease-in-out infinite; }
-    .ld-title  { font-size:18px; margin-bottom:4px; }
-    .ld-sub    { font-size:12px; color:var(--dim); margin-bottom:26px; }
-    #ld-bar-w  { width:280px; height:4px; background:#1a1a30; border-radius:2px; overflow:hidden; }
-    #ld-bar    { height:100%; width:0%; background:var(--accent); border-radius:2px;
-                 transition:width .25s linear; }
-    #ld-msg    { margin-top:10px; font-size:11px; color:var(--dim); }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+    /* Scanlines */
+    #loading::before {
+      content:''; position:absolute; inset:0;
+      background:repeating-linear-gradient(
+        0deg, transparent, transparent 2px,
+        rgba(0,212,255,.03) 2px, rgba(0,212,255,.03) 3px
+      );
+      animation:scanMove 2.5s linear infinite;
+      pointer-events:none;
+    }
+    /* Radial glow behind content */
+    #loading::after {
+      content:''; position:absolute;
+      width:500px; height:500px;
+      background:radial-gradient(circle,rgba(0,212,255,.07) 0%,transparent 68%);
+      border-radius:50%;
+      animation:neonPulse 3s ease-in-out infinite;
+      pointer-events:none;
+    }
+    #loading > * { position:relative; z-index:1; }
+    #loading.out  { opacity:0; pointer-events:none; }
+
+    .ld-glyph {
+      font-size:54px; color:var(--accent); margin-bottom:12px;
+      text-shadow:0 0 22px var(--accent),0 0 44px rgba(0,212,255,.5);
+      animation:glitch 4.2s ease-in-out infinite;
+    }
+    .ld-title {
+      font-size:20px; margin-bottom:4px;
+      text-shadow:0 0 16px rgba(0,212,255,.4);
+      letter-spacing:.18em;
+      animation:glitch 5.8s ease-in-out infinite;
+    }
+    .ld-sub    { font-size:12px; color:var(--dim); margin-bottom:26px; letter-spacing:.09em; }
+    #ld-bar-w  {
+      width:280px; height:3px; background:rgba(0,212,255,.1);
+      border-radius:2px; overflow:hidden;
+      box-shadow:0 0 10px rgba(0,212,255,.1);
+    }
+    #ld-bar {
+      height:100%; width:0%;
+      background:linear-gradient(90deg,var(--accent),var(--accent2),var(--accent));
+      background-size:200% 100%;
+      border-radius:2px;
+      animation:barShimmer 1.8s linear infinite;
+      box-shadow:0 0 12px var(--accent);
+      transition:width .25s linear;
+    }
+    #ld-msg { margin-top:10px; font-size:11px; color:var(--dim); letter-spacing:.09em; }
 
     /* ── Error overlay ───────────────────────────────────────── */
     #err-box {
-      display:none; position:fixed; inset:0; align-items:center; justify-content:center;
-      background:rgba(0,0,0,.8); z-index:950;
+      display:none; position:fixed; inset:0;
+      align-items:center; justify-content:center;
+      background:rgba(0,0,0,.85); z-index:950;
     }
     #err-box.show { display:flex; }
     .err-inner {
-      background:#1a0808; border:1px solid #7a2222; border-radius:10px;
+      background:rgba(18,4,4,.96); border:1px solid #7a2222; border-radius:8px;
       padding:24px 32px; max-width:480px; color:#f87171; font-size:13px;
       word-break:break-word; text-align:center;
+      box-shadow:0 0 30px rgba(248,113,113,.2);
     }
     .err-inner a { color:var(--accent); }
   </style>
@@ -179,6 +461,9 @@
 </head>
 <body>
 
+<!-- Screen-edge vignette -->
+<div id="vignette"></div>
+
 <!-- Top bar -->
 <div id="topbar">
   <span class="logo">⬡ RoboScene+</span>
@@ -191,13 +476,16 @@
 
 <!-- Sidebar -->
 <div id="sidebar">
-  <div class="sec-head">Semantic Objects</div>
+  <div class="sec-head">Detected Objects</div>
+  <div style="font-size:10px;color:#5580a0;padding:4px 12px 8px;letter-spacing:.04em">
+    Identified via SAM2 + GroundingDINO
+  </div>
   <div id="obj-list"></div>
-  <div class="sec-head" style="margin-top:0">Scene Info</div>
+  <div class="sec-head" style="margin-top:8px">Scene Info</div>
   <div id="stats"></div>
 </div>
 
-<!-- 2-D floating labels -->
+<!-- 2-D floating labels (hidden) -->
 <div id="lbl-layer"></div>
 
 <!-- Info card (top-right) -->
@@ -212,6 +500,31 @@
 
 <!-- Navigation hint -->
 <div id="hint">WASD · drag to look · scroll to zoom · click object to focus</div>
+
+<!-- Camera coordinate display -->
+<div id="cam-coords">
+  <div style="color:#00d4ff;font-weight:700;margin-bottom:4px;letter-spacing:.06em">
+    ⊕ Camera Position
+  </div>
+  <div>pos&nbsp;&nbsp;: <span id="cc-pos">—</span></div>
+  <div>look&nbsp;: <span id="cc-look">—</span></div>
+  <div>up&nbsp;&nbsp;&nbsp;: <span id="cc-up">—</span></div>
+  <div style="margin-top:6px;color:#5580a0;font-size:10px;letter-spacing:.04em">
+    Navigate to eye-level, then read these values
+  </div>
+</div>
+
+<!-- Onboarding overlay (shown after scene loads, dismissed on scroll) -->
+<div id="onboarding">
+  <div id="ob-inner">
+    <div class="ob-glyph">⬡</div>
+    <div class="ob-title">RoboScene+</div>
+    <div class="ob-sub">3D Semantic Bedroom Reconstruction</div>
+    <div class="ob-divider"></div>
+    <div class="ob-hint">Scroll to enter the scene</div>
+    <div class="ob-arrow">↓</div>
+  </div>
+</div>
 
 <!-- Loading overlay -->
 <div id="loading">
@@ -239,22 +552,17 @@ import * as GS from
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 const SPLAT_CANDIDATES = [
+  '/outputs/splat_v4/scene_aligned.splat',
+  '/outputs/splat_v4/scene_pruned.splat',
+  '/outputs/splat_v4/scene.splat',
   '/outputs/splat_v3/scene_yup.splat',
   '/outputs/splat_v3/scene_semantic_v3.splat',
   '/outputs/splat_v3/scene.splat',
-  '/outputs/splat_video_v2/scene_full.splat',
-  '/outputs/splat_v3/scene_semantic.splat',
-  '/outputs/splat_v3/scene_clean.splat',
-  '/outputs/splat_video_v2/scene_room_clean.splat',
-  '/outputs/splat_video_v2/scene_pruned.splat',
-  '/outputs/splat_video_v2/scene.splat',
-  '/outputs/scene_semantic_pruned.splat',
   '/outputs/scene_semantic.splat',
-  '/outputs/splat_video_v1/scene_pruned.splat',
-  '/outputs/splat_video_v1/scene.splat',
   '/outputs/scene_semantic.ply',
 ];
-const OBJECTS_URL = '/outputs/objects_3d_v3.json';
+const OBJECTS_URL          = '/outputs/objects_3d_yup.json';
+const OBJECTS_URL_FALLBACK = '/outputs/objects_3d_v3.json';
 
 const COLORS = {
   bed:'#FFB6C1', desk:'#20B2AA', chair:'#4682B4', laptop:'#6495ED',
@@ -262,8 +570,8 @@ const COLORS = {
   door:'#DEB887', window:'#87CEEB',
 };
 
-const HOME_POS  = [ 0.30,  0.31, -0.56];
-const HOME_LOOK = [ 0.00,  0.00,  0.00];
+const HOME_POS  = [ 0.261, -0.447,  0.114];
+const HOME_LOOK = [ 0.261, -0.412, -0.262];
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let viewer   = null;
@@ -273,25 +581,17 @@ let tourIdx  = 0;
 let tourTimeout = null;
 let touring  = false;
 
-// Camera animation
-let anim = null;       // {fromP, toP, fromL, toL, t0, dur, done}
-let introPhase = true;
-let introT0    = null;
-const INTRO_DUR = 5200;
+let anim = null;
 
-// DOM refs
-const ldBar  = document.getElementById('ld-bar');
-const ldMsg  = document.getElementById('ld-msg');
+const ldBar    = document.getElementById('ld-bar');
+const ldMsg    = document.getElementById('ld-msg');
 const lblLayer = document.getElementById('lbl-layer');
 const infoCard = document.getElementById('info-card');
 const tourDots = document.getElementById('tour-dots');
 
-// 2D label elements
-const lblEls = {};
-
 // ── Easing ─────────────────────────────────────────────────────────────────────
-const ease = t => 1 - Math.pow(1 - t, 3);          // ease-out cubic
-const easeIO = t => t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+const ease   = t => 1 - Math.pow(1 - t, 3);
+const easeIO = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
 
 // ── Camera helpers ─────────────────────────────────────────────────────────────
 function cam()      { return viewer?.camera; }
@@ -320,8 +620,9 @@ function tickAnim(now) {
   if (t >= 1) {
     anim.done = true;
     if (ctrl) ctrl.enabled = true;
-    anim.onDone?.();
-    anim = null;
+    const cb = anim.onDone;
+    anim = null;   // null BEFORE callback so flyTo() calls inside cb aren't overwritten
+    cb?.();
   }
 }
 
@@ -332,95 +633,42 @@ function resetCam() {
 }
 window.resetCam = resetCam;
 
-// ── Intro orbit ─────────────────────────────────────────────────────────────────
-// Camera sweeps ~100° around the room center, then returns to home.
-const INTRO_CTR = new THREE.Vector3( 0.00, 0.00,  0.00);
-const INTRO_R   = 0.9;
-
-function tickIntro(now) {
-  if (!cam()) return;
-  if (introT0 === null) introT0 = now;
-  const t  = Math.min((now - introT0) / INTRO_DUR, 1);
-  const et = ease(t);
-
-  // Arc from home angle to home+1.8 rad (≈103°), then the user takes over
-  const homeAngle  = Math.atan2(HOME_POS[0] - INTRO_CTR.x, HOME_POS[2] - INTRO_CTR.z);
-  const angle      = homeAngle + et * 1.8;
-  const y          = HOME_POS[1] + et * 0.25;
-
-  const ctrl = controls();
-  if (ctrl) ctrl.enabled = false;
-  cam().position.set(
-    INTRO_CTR.x + Math.sin(angle) * INTRO_R,
-    y,
-    INTRO_CTR.z + Math.cos(angle) * INTRO_R
-  );
-  if (ctrl) { ctrl.target.copy(INTRO_CTR); ctrl.update(); }
-  else { cam().lookAt(INTRO_CTR); }
-
-  if (t >= 1) {
-    introPhase = false;
-    flyTo(HOME_POS, HOME_LOOK, 1000, () => {
-      if (controls()) controls().enabled = true;
-    });
-  }
-}
-
-// ── 2D label projection ─────────────────────────────────────────────────────────
-function project(p3, camera) {
-  const v = new THREE.Vector3(...p3).project(camera);
-  return {
-    x: ( v.x + 1) / 2 * window.innerWidth,
-    y: (-v.y + 1) / 2 * window.innerHeight,
-    visible: v.z > -1 && v.z < 1 && v.z > 0,
-  };
-}
-
-function updateLabels() {
-  if (!cam()) return;
-  for (const [name, obj] of Object.entries(objects)) {
-    const el = lblEls[name];
-    if (!el || !obj.centroid_3d) continue;
-    const p = project(obj.centroid_3d, cam());
-    // Hide labels inside sidebar area
-    if (!p.visible || p.x < 270) { el.style.display = 'none'; continue; }
-    el.style.display = '';
-    el.style.left = p.x + 'px';
-    el.style.top  = p.y + 'px';
-  }
-}
-
 // ── Object selection ────────────────────────────────────────────────────────────
+
+// Interior sweep position used as the tour's opening shot (slightly inside entrance)
+const ROOM_VIEW_POS = [0.261, -0.553, 0.60];
+
+// Ground-truth tour stops computed from actual Gaussian cluster centroids
+// (semantic_class.npy ∩ scene_aligned.ply). The objects_3d_yup.json centroids were
+// computed in camera-normalisation space (~10× smaller scale) and cannot be used
+// for viewer navigation directly.
+// Camera positions: 0.72 m from centroid along the HOME_POS approach direction.
+// Exact camera positions captured manually from the viewer for each confirmed object.
+// All other detections (monitor, desk, door, window, lamp) were false positives and excluded.
+const TOUR_STOPS = {
+  bed:    { pos:[-0.067, -0.415, -0.053], look:[ 0.105, -0.412, -0.163] },
+  laptop: { pos:[ 0.587, -0.342, -0.057], look:[ 0.765, -0.341,  0.290] },
+  fan:    { pos:[ 0.626, -0.386,  0.020], look:[ 0.929, -0.341,  0.261] },
+  shelf:  { pos:[ 0.378, -0.308, -0.183], look:[ 0.204, -0.412, -0.306] },
+  chair:  { pos:[ 0.596, -0.360, -0.555], look:[ 0.608, -0.412, -0.323] },
+};
+
 function viewPosFor(name) {
-  const obj = objects[name];
-  if (!obj?.centroid_3d) return null;
-  const [cx, cy, cz] = obj.centroid_3d;
-  // Position camera 1.3 m in front and slightly above the object
-  return { pos: [cx, cy - 0.3, cz + 1.3], look: [cx, cy, cz] };
+  return TOUR_STOPS[name] ?? null;
 }
 
 function selectObj(name) {
-  // Deselect previous
-  document.querySelectorAll('.obj-row').forEach(el => el.classList.remove('sel'));
-  for (const n of Object.keys(lblEls)) lblEls[n]?.classList.remove('sel');
-
   selected = name;
-
-  if (!name) {
-    infoCard.classList.add('hidden');
-    return;
-  }
-
-  document.getElementById('or-' + name)?.classList.add('sel');
-  lblEls[name]?.classList.add('sel');
-
-  // Info card
+  document.querySelectorAll('.obj-row').forEach(r => r.classList.remove('sel'));
+  if (!name) { infoCard.classList.add('hidden'); return; }
+  const row = document.getElementById('or-' + name);
+  if (row) row.classList.add('sel');
   const obj = objects[name];
-  if (obj) showInfo(name, obj);
-
-  // Fly camera
-  const fp = viewPosFor(name);
-  if (fp) flyTo(fp.pos, fp.look);
+  if (obj) {
+    showInfo(name, obj);
+    const vp = viewPosFor(name);
+    if (vp) flyTo(vp.pos, vp.look, 1600);
+  }
 }
 window.selectObj = selectObj;
 
@@ -431,9 +679,11 @@ function showInfo(name, obj) {
   const prov   = obj.provenance ?? '—';
   const vol    = obj.volume_m3 != null ? obj.volume_m3.toFixed(2) + ' m³' : '—';
   const frames = obj.frames_seen ?? '—';
-  const c      = obj.centroid_3d ?? [0,0,0];
+  const c      = TOUR_STOPS[name]?.look ?? obj.centroid_3d ?? [0,0,0];
+  const color  = COLORS[name] || '#aaa';
 
-  document.getElementById('ic-name').style.borderLeft = `3px solid ${COLORS[name]||'#aaa'}`;
+  document.getElementById('ic-name').style.borderLeft = `3px solid ${color}`;
+  document.getElementById('ic-name').style.textShadow = `0 0 12px ${color}88`;
   document.getElementById('ic-name').textContent = name;
   document.getElementById('ic-rows').innerHTML = `
     <div class="irow"><span>Confidence</span><span class="badge ${cls}">${pct}%</span></div>
@@ -450,35 +700,47 @@ function showInfo(name, obj) {
 function toggleTour() { touring ? stopTour() : startTour(); }
 window.toggleTour = toggleTour;
 
+const TOUR_ORDER = ['bed', 'laptop', 'fan', 'chair', 'shelf'];
+
+function tourNames() {
+  return TOUR_ORDER.filter(name => TOUR_STOPS[name] != null);
+}
+
 function startTour() {
-  touring  = true;
-  tourIdx  = 0;
+  touring = true; tourIdx = 0;
   const btn = document.getElementById('tour-btn');
-  btn.textContent = '■ Stop';
-  btn.classList.add('touring');
+  btn.textContent = '■ Stop'; btn.classList.add('touring');
   tourDots.classList.remove('hidden');
   nextTourStep();
 }
 
 function stopTour() {
-  touring = false;
-  clearTimeout(tourTimeout);
+  touring = false; clearTimeout(tourTimeout);
   const btn = document.getElementById('tour-btn');
-  btn.textContent = '▶ Tour';
-  btn.classList.remove('touring');
+  btn.textContent = '▶ Tour'; btn.classList.remove('touring');
   tourDots.classList.add('hidden');
 }
 
 function nextTourStep() {
   if (!touring) return;
-  const names = Object.keys(objects);
+  const names = tourNames();
   if (tourIdx >= names.length) { stopTour(); resetCam(); return; }
-  selectObj(names[tourIdx]);
-  // Highlight dot
+  const name = names[tourIdx];
+  // Highlight sidebar row + info card (no camera move here — flyTo below handles it)
+  selected = name;
+  document.querySelectorAll('.obj-row').forEach(r => r.classList.remove('sel'));
+  const row = document.getElementById('or-' + name);
+  if (row) { row.classList.add('sel'); row.scrollIntoView({ behavior:'smooth', block:'nearest' }); }
+  if (objects[name]) showInfo(name, objects[name]);
+  // Fly camera to the object-specific position
+  const vp = viewPosFor(name);
+  if (vp) flyTo(vp.pos, vp.look, 1600);
+  // Update tour dots
   document.querySelectorAll('.tdot').forEach((d, i) =>
     d.classList.toggle('on', i === tourIdx));
   tourIdx++;
-  tourTimeout = setTimeout(nextTourStep, 3600);
+  // 5 s per stop: 1.6 s flight + 3.4 s viewing time
+  tourTimeout = setTimeout(nextTourStep, 5000);
 }
 
 // ── Sidebar build ───────────────────────────────────────────────────────────────
@@ -487,48 +749,46 @@ function buildSidebar(objs) {
   list.innerHTML = '';
   tourDots.innerHTML = '';
 
-  for (const [name, obj] of Object.entries(objs)) {
-    const conf  = obj.reconstruction_confidence ?? 0;
-    const pct   = Math.round(conf * 100);
-    const cls   = conf > .7 ? 'g' : conf > .3 ? 'a' : 'r';
-    const prov  = obj.provenance ?? '';
-    const color = COLORS[name] || '#888';
+  // Only show confirmed real objects — others were false positives from SAM2+GroundingDINO
+  const confirmed = Object.fromEntries(
+    Object.entries(objs).filter(([name]) => TOUR_STOPS[name] != null)
+  );
+
+  for (const [name, obj] of Object.entries(confirmed)) {
+    const color  = COLORS[name] || '#888';
+    const frames = obj.frames_seen ?? '—';
+    const hex    = color.replace('#','');
+    const r      = parseInt(hex.slice(0,2),16);
+    const g      = parseInt(hex.slice(2,4),16);
+    const b      = parseInt(hex.slice(4,6),16);
+    const glow   = `rgba(${r},${g},${b},0.7)`;
 
     const row = document.createElement('div');
     row.className = 'obj-row';
     row.id = 'or-' + name;
+    row.onclick = () => selectObj(name);
     row.innerHTML = `
-      <div class="dot" style="background:${color}"></div>
-      <span class="name">${name}</span>
-      <span class="chip">${prov}</span>
-      <span class="badge ${cls}">${pct}%</span>
+      <div class="dot" style="
+        background:${color};
+        box-shadow:0 0 10px ${glow},0 0 22px rgba(${r},${g},${b},.35);
+        flex-shrink:0
+      "></div>
+      <span class="name" style="flex:1;text-transform:capitalize">${name}</span>
+      <span style="font-size:10px;color:#5580a0;letter-spacing:.03em">${frames} frames</span>
     `;
-    row.onclick = () => { stopTour(); selectObj(name); };
     list.appendChild(row);
 
-    // Floating label
-    const lbl = document.createElement('div');
-    lbl.className = 'lbl';
-    lbl.innerHTML = `<span style="color:${color}">●</span> ${name}`;
-    lbl.style.display = 'none';
-    lblLayer.appendChild(lbl);
-    lblEls[name] = lbl;
-
-    // Tour dot
     const dot = document.createElement('div');
     dot.className = 'tdot';
     tourDots.appendChild(dot);
   }
 
-  // Stats panel
-  const n    = Object.keys(objs).length;
-  const avg  = n ? (Object.values(objs)
-    .reduce((s, o) => s + (o.reconstruction_confidence ?? 0), 0) / n * 100).toFixed(0) : 0;
+  const n = Object.keys(confirmed).length;
   document.getElementById('stats').innerHTML = `
-    <div><strong>${n}</strong> objects detected</div>
-    <div>Avg confidence <strong>${avg}%</strong></div>
-    <div>Gaussians <strong>768 K</strong></div>
-    <div>Training views <strong>304</strong></div>
+    <div><strong>${n}</strong> confirmed objects</div>
+    <div>Detection: SAM2 + GroundingDINO</div>
+    <div>Frames analysed: <strong>539</strong></div>
+    <div>Gaussians: <strong>2.41M</strong></div>
   `;
 }
 
@@ -545,7 +805,28 @@ function finishLoad() {
   ldMsg.textContent = 'Ready!';
   setTimeout(() => {
     document.getElementById('loading').classList.add('out');
-    setTimeout(() => document.getElementById('loading').remove(), 600);
+    setTimeout(() => {
+      document.getElementById('loading').remove();
+      // Reveal onboarding overlay after scene is exposed
+      const ob = document.getElementById('onboarding');
+      if (!ob) return;
+      ob.classList.add('visible');
+
+      function dismiss() {
+        ob.classList.remove('visible');
+        ob.style.transition = 'opacity 1.1s ease-out';
+        window.removeEventListener('wheel', onScroll);
+        ob.removeEventListener('click', dismiss);
+        setTimeout(() => ob.remove(), 1200);
+      }
+      let scrollTicks = 0;
+      function onScroll() {
+        scrollTicks++;
+        if (scrollTicks >= 2) dismiss();  // dismiss after 2 wheel ticks
+      }
+      window.addEventListener('wheel', onScroll, { passive: true });
+      ob.addEventListener('click', dismiss);
+    }, 600);
   }, 350);
 }
 
@@ -569,16 +850,16 @@ async function bestSplatUrl() {
 
 // ── Main ────────────────────────────────────────────────────────────────────────
 async function main() {
-  // Load object data (non-blocking — sidebar builds immediately)
   ldMsg.textContent = 'Loading metadata…';
   try {
-    objects = await fetch(OBJECTS_URL).then(r => r.json());
+    let objResp = await fetch(OBJECTS_URL);
+    if (!objResp.ok) objResp = await fetch(OBJECTS_URL_FALLBACK);
+    objects = await objResp.json();
     buildSidebar(objects);
   } catch (e) {
     console.warn('objects_3d.json not found — sidebar will be empty', e);
   }
 
-  // Find splat file
   ldMsg.textContent = 'Locating scene file…';
   const splatUrl = await bestSplatUrl();
   if (!splatUrl) {
@@ -592,7 +873,6 @@ async function main() {
   ldMsg.textContent = `Loading ${splatLabel}…`;
   document.getElementById('load-indicator').textContent = splatUrl.split('/').pop();
 
-  // Create viewer
   viewer = new GS.Viewer({
     cameraUp:              [0, 1, 0],
     initialCameraPosition: HOME_POS,
@@ -616,26 +896,15 @@ async function main() {
 
   viewer.start();
 
-  // Speed up WASD movement — default is very slow for large scenes
-  if (viewer.controls) {
-    viewer.controls.movementSpeed = 2.0;
-    viewer.controls.keyboardMovementSpeed = 2.0;
-  }
-  // Force correct up axis and orbit behaviour after controls init
   function fixControls() {
     const ctrl = viewer.controls;
     const cam  = viewer.camera;
     if (!ctrl || !cam) return;
-    // Force Y-up on the Three.js camera
     cam.up.set(0, 1, 0);
-    // If OrbitControls is available, force its up vector too
     if (ctrl.object) ctrl.object.up.set(0, 1, 0);
-    // screenSpacePanning=false means orbit rotates around the up axis (correct)
     if (ctrl.screenSpacePanning !== undefined) ctrl.screenSpacePanning = false;
-    // Remove polar angle limits so camera can rotate freely
     if (ctrl.minPolarAngle !== undefined) ctrl.minPolarAngle = 0;
     if (ctrl.maxPolarAngle !== undefined) ctrl.maxPolarAngle = Math.PI;
-    // Speed
     viewer.controls.movementSpeed = 2.0;
     viewer.controls.keyboardMovementSpeed = 2.0;
     if (ctrl.zoomSpeed !== undefined) ctrl.zoomSpeed = 3.0;
@@ -647,14 +916,29 @@ async function main() {
 
   finishLoad();
 
-  // ── Our overlay RAF: camera animation + label updates ──────────────────────
   function overlayTick(now) {
     requestAnimationFrame(overlayTick);
-    if (introPhase)      tickIntro(now);
-    else if (anim)       tickAnim(now);
-    updateLabels();
+    if (anim) tickAnim(now);
+    updateCamCoords();
   }
   requestAnimationFrame(overlayTick);
+
+  function fmt(v) { return v.toFixed(3); }
+  function updateCamCoords() {
+    if (!cam()) return;
+    const p  = cam().position;
+    const ctrl = controls();
+    const lx = ctrl ? ctrl.target.x : 0;
+    const ly = ctrl ? ctrl.target.y : 0;
+    const lz = ctrl ? ctrl.target.z : 0;
+    const u  = cam().up;
+    document.getElementById('cc-pos').textContent =
+      `[${fmt(p.x)}, ${fmt(p.y)}, ${fmt(p.z)}]`;
+    document.getElementById('cc-look').textContent =
+      `[${fmt(lx)}, ${fmt(ly)}, ${fmt(lz)}]`;
+    document.getElementById('cc-up').textContent =
+      `[${fmt(u.x)}, ${fmt(u.y)}, ${fmt(u.z)}]`;
+  }
 }
 
 // ── Resize ──────────────────────────────────────────────────────────────────────
@@ -665,7 +949,7 @@ window.addEventListener('resize', () => {
   viewer.renderer?.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ── Keyboard shortcut: T = tour, R = reset, Escape = deselect ─────────────────
+// ── Keyboard shortcuts ──────────────────────────────────────────────────────────
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
   if (e.key === 't' || e.key === 'T') toggleTour();

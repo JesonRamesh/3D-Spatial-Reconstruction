@@ -115,7 +115,8 @@ else
     echo "      Expected: ~2-3 hours on GPU"
     echo "      Started: $(date)"
 
-    python3 scripts/run_semantic.py \
+    PYTHON=/scratch0/jrameshs/roboscene_env/bin/python3
+    $PYTHON scripts/run_semantic.py \
         --frames_dir   "$FRAMES_DIR" \
         --output_dir   "$SEMAN_OUT" \
         --labels       "bed,desk,chair,laptop,shelf,door,window,fan,lamp,monitor" \
@@ -138,7 +139,8 @@ else
     echo "      Using colmap_v3 poses + semantic_v3 JSONs"
     echo "      Started: $(date)"
 
-    python3 scripts/paint_semantic_gaussians.py \
+    PYTHON=/scratch0/jrameshs/roboscene_env/bin/python3
+    $PYTHON scripts/paint_semantic_gaussians.py \
         --splat_ply      "$SPLAT_PLY" \
         --semantic_dir   "$SEMAN_OUT" \
         --cameras_bin    "$COLMAP_DIR/cameras.bin" \
@@ -159,7 +161,8 @@ if [ -f "$OBJECTS_JSON" ]; then
 else
     echo "[4/4] Lifting semantics to 3D object centroids..."
 
-    python3 scripts/lift_semantics_3d.py \
+    PYTHON=/scratch0/jrameshs/roboscene_env/bin/python3
+    $PYTHON scripts/lift_semantics_3d.py \
         --semantic_dir   "$SEMAN_OUT" \
         --colmap_dir     "$COLMAP_DIR" \
         --pointcloud     "$SPLAT_PLY" \

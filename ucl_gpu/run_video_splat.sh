@@ -263,7 +263,7 @@ if [ -f "$POINTS_PLY" ]; then
     echo "[4b/5] Point cloud PLY already exists. Skipping."
 else
     echo "[4b/5] Converting COLMAP points to PLY for Gaussian initialisation..."
-    python3 -c "
+    /scratch0/jrameshs/roboscene_env/bin/python3 -c "
 import pycolmap, numpy as np
 from plyfile import PlyData, PlyElement
 from pathlib import Path
