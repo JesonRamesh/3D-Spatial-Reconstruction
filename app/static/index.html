@@ -626,17 +626,14 @@ function buildSidebar(objs) {
   `;
 }
 
-// ── Fake progress bar ───────────────────────────────────────────────────────────
-let ldPct = 0;
-const ldTimer = setInterval(() => {
-  ldPct = Math.min(88, ldPct + (88 - ldPct) * 0.045 + 0.4);
-  ldBar.style.width = ldPct + '%';
-}, 180);
+// ── Progress helpers ────────────────────────────────────────────────────────────
+function setProgress(pct, msg) {
+  ldBar.style.width = Math.min(100, pct) + '%';
+  if (msg) ldMsg.textContent = msg;
+}
 
 function finishLoad() {
-  clearInterval(ldTimer);
-  ldBar.style.width = '100%';
-  ldMsg.textContent = 'Ready!';
+  setProgress(100, 'Ready!');
   setTimeout(() => {
     document.getElementById('loading').classList.add('out');
     setTimeout(() => {
@@ -682,6 +679,31 @@ async function bestSplatUrl() {
   return null;
 }
 
+// Download splat with real progress reporting, return an object URL
+async function downloadSplatWithProgress(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching splat`);
+  const total = parseInt(resp.headers.get('content-length') || '0', 10);
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let received = 0;
+  const mb = n => (n / 1048576).toFixed(1) + ' MB';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    if (total > 0) {
+      const pct = 10 + (received / total) * 85;  // 10–95%
+      setProgress(pct, `Downloading scene… ${mb(received)} / ${mb(total)}`);
+    } else {
+      setProgress(50, `Downloading scene… ${mb(received)}`);
+    }
+  }
+  const blob = new Blob(chunks);
+  return URL.createObjectURL(blob);
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────────
 async function main() {
   ldMsg.textContent = 'Loading metadata…';
@@ -694,18 +716,28 @@ async function main() {
     console.warn('objects_3d.json not found — sidebar will be empty', e);
   }
 
-  ldMsg.textContent = 'Locating scene file…';
+  setProgress(5, 'Locating scene file…');
   const splatUrl = await bestSplatUrl();
   if (!splatUrl) {
     showError('No scene file found.\n\nExpected one of:\n' + SPLAT_CANDIDATES.join('\n'));
     return;
   }
 
-  const isSplat   = splatUrl.endsWith('.splat');
-  const isPruned  = splatUrl.includes('_pruned');
-  const splatLabel = isPruned ? '1.3M splats (pruned)' : isSplat ? 'splat' : 'PLY';
-  ldMsg.textContent = `Loading ${splatLabel}…`;
   document.getElementById('load-indicator').textContent = splatUrl.split('/').pop();
+  setProgress(10, 'Starting download…');
+
+  let loadUrl = splatUrl;
+  // For remote URLs stream with progress; local files load directly
+  if (splatUrl.startsWith('http')) {
+    try {
+      loadUrl = await downloadSplatWithProgress(splatUrl);
+    } catch (err) {
+      showError('Download failed: ' + String(err));
+      return;
+    }
+  }
+
+  setProgress(96, 'Building scene…');
 
   viewer = new GS.Viewer({
     cameraUp:              [0, 1, 0],
@@ -715,11 +747,11 @@ async function main() {
     useBuiltInControls:    true,
     dynamicScene:          false,
     webXRMode:             GS.WebXRMode.None,
-    renderMode:            GS.RenderMode.OnChange,
+    renderMode:            GS.RenderMode.Always,
   });
 
   try {
-    await viewer.addSplatScene(splatUrl, {
+    await viewer.addSplatScene(loadUrl, {
       splatAlphaRemovalThreshold: 5,
       showLoadingUI: false,
     });
