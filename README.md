@@ -15,7 +15,8 @@
 
 No installation needed. Click objects in the sidebar to fly to them. Use the Tour button for a guided walkthrough.
 
-![Viewer screenshot placeholder](app/assets/banner.png)
+![Viewer screenshot placeholder](<img width="1482" height="728" alt="image" src="https://github.com/user-attachments/assets/eba8ad7f-4052-4a6f-bbad-2a5bd8d2c987" />
+)
 
 ---
 
