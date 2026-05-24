@@ -13,7 +13,7 @@
 
 > **[huggingface.co/spaces/jeeeeeeeson/roboscene-plus](https://huggingface.co/spaces/jeeeeeeeson/roboscene-plus)**
 
-No installation needed. Click objects in the sidebar to fly to them. Use the Tour button for a guided walkthrough.
+The viewer streams a 50MB splat file — allow 20–40s for the download bar to complete on first load. If the HF Space fails to load, run the viewer locally (see [Quick Start](#quick-start) below — no GPU required, just `python open_viewer.py`).
 
 ![Viewer screenshot placeholder](app/assets/banner.png)
 
