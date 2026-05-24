@@ -1,50 +1,55 @@
-# RoboScene+ .gitignore
-
-# Video files (too large for git)
+# ── Video & raw media ────────────────────────────────────────────
 *.MOV
 *.mov
 *.mp4
 *.avi
 *.mkv
 
-# Extracted frames (regenerable)
-data/frames/*.jpg
-data/frames/*.png
-
-# VGGT outputs
-data/vggt_out/
-
-# Depth maps
-data/depth/
-
-# Model weights
-models/
+# ── Large binary outputs (stored on HF: jeeeeeeeson/roboscene-data) ─
+*.ply
+*.splat
 *.pth
 *.pt
 *.onnx
-*.bin
-*.safetensors
+*.pkl
+*.npy
 
-# Gaussian Splat files (large)
-outputs/splat/*.ply
-outputs/splat/*.splat
+# ── Extracted frames (regenerable from video) ────────────────────
+data/frames/*.jpg
+data/frames/*.png
 
-# Generated outputs (regenerable)
+# ── Intermediate data directories ────────────────────────────────
+data/raw_images/
+data/colmap_v3/
+data/colmap_v4/
+data/colmap_video/
+data/vggt_out_v2/
+data/mast3r_out/
+data/depth/
+data/vggt_out/sparse/
+data/vggt_out/images/
+
+# ── Generated outputs (regenerable) ──────────────────────────────
+outputs/splat/
+outputs/splat_v4/
+outputs/splat_mast3r/
+outputs/splat_mast3r_v2/
 outputs/semantic/
+outputs/semantic_v2/
+outputs/semantic_v3/
 outputs/dead_zones/
-outputs/confidence_map.npy
-outputs/navigability_map.png
+outputs/debug/
+outputs/highlights/
 
-# Keep metadata files
-!data/frames/extraction_metadata.json
-!data/frames/frames_summary.csv
-!outputs/scene_graph.json
-!outputs/objects_3d.json
+# ── Model weights ────────────────────────────────────────────────
+models/
+weights/
 
-# Downloaded gsplat trainer examples (fetched at runtime)
-scripts/gsplat_examples/
+# ── Temp / debug ─────────────────────────────────────────────────
+tmp/
+logs/*.log
 
-# Python
+# ── Python ───────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -53,37 +58,20 @@ dist/
 build/
 .eggs/
 
-# Environments
+# ── Environments & secrets ───────────────────────────────────────
 .venv/
 venv/
 env/
 .env
 
-# IDE
+# ── IDE & OS ─────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Logs
-logs/*.log
-
-# Jupyter
-.ipynb_checkpoints/data/frames/frames
-data/frames_subset/
-data/mast3r_out/
-outputs/splat/
-outputs/splat_mast3r/
-outputs/splat_mast3r_v2/
-outputs/semantic/
-weights/
-logs/
-*.ply
-*.splat
-*.pth
-*.pkl
+# ── Jupyter ──────────────────────────────────────────────────────
+.ipynb_checkpoints/

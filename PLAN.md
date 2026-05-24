@@ -1,5 +1,5 @@
 # RoboScene+ — Active Plan
-### Last updated: 2026-05-24 (Session 10 — Semantics + Viewer cleanup) | Deadline: 2026-05-25
+### Last updated: 2026-05-24 (Session 11 — Viewer Polish + HF Deploy next) | Deadline: 2026-05-25
 
 ---
 
@@ -11,235 +11,191 @@ room_video_v2.MOV (641 frames)
   → nerfstudio splatfacto 60K steps (RTX 4070 Ti, bluestreak)
   → outputs/splat_v4/scene.ply                (2.41M Gaussians, 571MB, Z-up)
   → outputs/splat_v4/scene_aligned.ply        (2.41M Gaussians, 598MB, Y-up ✅)
-  → outputs/splat_v4/scene_aligned.splat      (74MB)
+  → outputs/splat_v4/scene_aligned.splat      (74MB — PRIMARY in viewer ✅)
   → outputs/splat_v4/scene_pruned.ply         (1.22M Gaussians, 302MB ✅)
   → outputs/splat_v4/scene_pruned.splat       (39MB)
-  → outputs/splat_v4/scene_semantic.ply       (2.41M Gaussians, 598MB, 35% tint ✅)
-  → outputs/splat_v4/scene_semantic.splat     (77MB — PRIMARY in viewer ✅)
+  → outputs/splat_v4/scene_semantic.ply       (2.41M Gaussians, 598MB, 35% tint)
+  → outputs/splat_v4/scene_semantic.splat     (77MB)
   → outputs/splat_v4/semantic_class.npy       (exact per-Gaussian class uint8 labels)
-  → outputs/splat_v4/highlights/              (10 x per-object full-color splats)
+  → outputs/splat_v4/highlights/              (per-object full-color splats)
   → outputs/objects_3d_yup.json              (Y-up centroids + confidence)
   → outputs/semantic_v2/                     (641 SAM2 JSONs from v2 frames ✅)
 ```
 
-**Viewer:** `python3 open_viewer.py` → http://localhost:8080/app/static/index.html  
-**Splat loaded:** `outputs/splat_v4/scene_aligned.splat` (74MB, clean appearance, normal opacity)  
-**Sidebar:** 10 detected objects — color swatch + name + frames seen (SAM2 + GroundingDINO)  
-**HOME_POS:** `[0.261, -0.553, 1.238]` — eye-level, pulled back from room  
-**HOME_LOOK:** `[0.261, -0.412, -0.262]` — scene centroid (hi-opacity)
+**Viewer:** `python3 open_viewer.py` → http://localhost:8080/app/static/index.html
+**Splat loaded:** `outputs/splat_v4/scene_aligned.splat` (74MB, clean appearance)
+**HOME_POS:** `[0.261, -0.447, 0.114]` — inside room at eye level
+**HOME_LOOK:** `[0.261, -0.412, -0.262]` — scene centroid
+
+**Confirmed objects (5):** bed, laptop, fan, chair, shelf
+**False positives removed:** monitor, desk, door, window, lamp
 
 ---
 
-## Session 7 Implementation Log (2026-05-24) — Floor Alignment ✅
+## ✅ Session 11 — Viewer Polish (2026-05-24)
 
-### Problem
-The orbit was wrong in all previous splat versions:
-- `splat_v3/scene_yup.ply` — used mean camera-up vector → rotation made it worse
-- `splat_v4/scene.ply` — nerfstudio `--orientation-method up` only partial fix (17° off)
-- First attempt at `realign_splat_v4.py` — used lowest 10% Y Gaussians for floor SVD
-  → floaters contaminated the sample → floor normal was `[0.224, -0.954, 0.199]`
-  → rotation_between() introduced a roll → floor became a vertical wall ❌
+### Futuristic UI overhaul
+- **Color scheme:** electric cyan `#00d4ff` + neon purple `#b039ff` (replaced muted `#7F77DD`)
+- **Neon panel glow:** animated `box-shadow` pulse on topbar and sidebar (5–6s breathing cycle)
+- **Animated edges:** sliding cyan→purple gradient on topbar bottom edge and sidebar right edge
+- **Animated topbar background:** slow 14s gradient shift across dark-blue hues
+- **Scanlines:** subtle horizontal scanlines on sidebar, topbar, and loading overlay (≤3% opacity)
+- **Object dot glow:** each confirmed object's color swatch glows with its semantic color
+- **Buttons:** neon glow on hover, box-shadow active states
+- **Screen-edge vignette:** radial gradient giving a subtle cyan halo at viewport corners
 
-### Root Cause Diagnosed
-```
-nerfstudio PLY header: "comment Vertical Axis: z"  ← Z-up, NOT Y-up
-Viewer expects Y-up.
-Fix = two-step rotation:
-  Step A: -90° around X axis (Z-up → Y-up)  [[1,0,0],[0,0,1],[0,-1,0]]
-  Step B: 2.73° residual tilt correction (fit to lowest 1% hi-opacity Gaussians)
-```
+### Loading screen upgrade
+- Glitch animation on `⬡` glyph and "RoboScene+" title (CSS clip-path + skew + color split)
+- Progress bar: shimmer gradient (cyan→purple→cyan) instead of solid fill
+- Scanline sweep overlay during loading
 
-### Floor SVD lesson learned
-At 10% percentile threshold, singular values are `[339, 298, 222]` — nearly equal,
-meaning floaters are spread in all 3 axes and contaminate the floor normal.
-At **1% threshold**, singular values drop to `[228, 192, 90]` — clear separation,
-floor normal `[-0.007, -0.999, -0.047]` — nearly perfect -Y. Use 1% always.
+### Onboarding overlay
+- Appears after loading completes; scene rotates visibly behind it (translucent dark)
+- Shows `⬡ RoboScene+ / Scroll to enter the scene ↓` with floating + pulsing arrow
+- Dismissed after 2 scroll wheel ticks or any click; fades out over 1.1s
 
-### Script: `scripts/realign_splat_v4.py`
-- Input: `outputs/splat_v4/scene.ply`
-- Step A: apply `R_zup = [[1,0,0],[0,0,1],[0,-1,0]]` to all positions + quaternions
-- Step B: SVD on lowest 1% hi-opacity Gaussians (by Y after Step A) → residual tilt R
-- Vectorised batch quaternion rotation (Shepperd 4-case, no Python loop)
-- Output: `outputs/splat_v4/scene_aligned.ply` (598MB)
-- Converted: `outputs/splat_v4/scene_aligned.splat` (74MB)
+### HUD panels
+- Info card + camera coords panel: top neon strip (::before), bottom-right corner bracket (::after)
+- Scrollbar neon cyan thumb
 
-### Result
-- Floor is flat and horizontal ✅
-- Orbit is lazy-Susan around vertical Y axis ✅  
-- HOME_POS inside room at eye level ✅
-- **Remaining problem: floaters throughout the scene** (see next session below)
+### Tour navigation — root cause fixed
+**Bug:** `objects_3d_yup.json` centroids were in camera-normalisation space (~10× smaller
+scale than PLY viewer space). Tour was flying to completely wrong positions.
 
----
+**Fix:** Hardcoded `TOUR_STOPS` computed from actual Gaussian cluster means read directly
+from `semantic_class.npy` + `scene_aligned.ply`. Camera positions then captured manually
+in the viewer for each object.
 
-## ⚠️ NEXT PROBLEM: Floaters
+**Second bug:** `tickAnim` called `anim.onDone?.()` before `anim = null`, so any `flyTo`
+inside the callback was immediately overwritten. Fixed by nulling `anim` first.
 
-The scene has many semi-transparent floater Gaussians spread throughout the room
-(artefacts from splatfacto training on a phone video with limited coverage).
-They appear as ghostly patches in the air that obscure the geometry.
+**Tour order:** Bed → Laptop → Fan → Chair → Shelf (hardcoded `TOUR_ORDER`)
 
-**Effect:** The room looks foggy/noisy — hard to read the furniture clearly.
-**Root cause:** Low-opacity Gaussians that survived the training pruning threshold
-(`cull-alpha-thresh 0.005`). These are real outputs, not a coordinate bug.
-
----
-
-## ✅ DONE Session 8 — Prune Floaters
-
-### Result
-`scripts/prune_floaters.py` written and run. Produces `scene_pruned.ply`.
-
-**Pruning pipeline:**
-- Step 1 — Opacity filter: `sigmoid(opacity) > 0.30`
-- Step 2 — Density filter: ≥5 neighbours within r=0.1m (cKDTree on full set)
-- Step 3 — Bbox clip: X[-5,5] Y[-5.5,4.5] Z[-5,5.5] (scene fits within, 0 clipped)
-
-**Results:**
-```
-Original:         2,410,031 Gaussians  (598 MB PLY / 74 MB splat)
-After opacity:    1,255,751  (47.9% removed — haze band opacity 0.0–0.30)
-After density:    1,215,812  (3.2% additional removed)
-After bbox:       1,215,812  (0 clipped — scene within bounds)
-Final:            1,215,812 Gaussians  (302 MB PLY / 39 MB splat)
+### Exact tour stops (manually captured)
+```javascript
+bed:    pos:[-0.067, -0.415, -0.053]  look:[ 0.105, -0.412, -0.163]
+laptop: pos:[ 0.587, -0.342, -0.057]  look:[ 0.765, -0.341,  0.290]
+fan:    pos:[ 0.626, -0.386,  0.020]  look:[ 0.929, -0.341,  0.261]
+chair:  pos:[ 0.596, -0.360, -0.555]  look:[ 0.608, -0.412, -0.323]
+shelf:  pos:[ 0.378, -0.308, -0.183]  look:[ 0.204, -0.412, -0.306]
 ```
 
-**Key insight — opacity distribution is bimodal:**
-- p05=0.14, p10=0.19, p20=0.49 — haze band
-- p30=0.976, p50=1.0, p70+=1.0 — opaque core (70%+ fully saturated)
-- Threshold 0.30 cuts the semi-transparent layer cleanly
-
-**Viewer updated:** `SPLAT_CANDIDATES[0]` → `scene_pruned.splat` ✅
-
-### Original Goal
-Write and run `scripts/prune_floaters.py` to remove low-opacity and spatially
-isolated Gaussians from `scene_aligned.ply`, producing a clean `scene_pruned.ply`.
-
-### Script spec
-
-```
-Inputs:  outputs/splat_v4/scene_aligned.ply
-Outputs: outputs/splat_v4/scene_pruned.ply
-         outputs/splat_v4/scene_pruned.splat
-```
-
-**Step 1 — Opacity filter:**
-Keep only Gaussians where `sigmoid(opacity) > OPACITY_THRESH` (try 0.1 first).
-Print how many survive at thresholds 0.05, 0.10, 0.15, 0.20 before committing.
-
-**Step 2 — Spatial density filter (remove isolated floaters):**
-For surviving Gaussians, compute local neighbourhood density:
-- Subsample to max 200K points for KD-tree construction (speed)
-- For each Gaussian, count neighbours within radius `r = 0.1m`
-- Keep Gaussians with at least `min_neighbours = 5` neighbours
-- This removes lone floaters far from any surface
-
-**Step 3 — Bounding box clip:**
-Drop Gaussians outside the room bounding box with 10% padding.
-Room bbox from hi-opacity Gaussians: roughly X=[-6.5, 6.5], Y=[-6.7, 6.3], Z=[-6.5, 6.9]
-Clip to X=[-5, 5], Y=[-5.5, 4.5], Z=[-5, 5.5] (tighter inner box, avoids wall floaters).
-
-**Step 4 — Convert and verify:**
-```bash
-python3 scripts/convert_to_splat.py \
-  --input outputs/splat_v4/scene_pruned.ply \
-  --output outputs/splat_v4/scene_pruned.splat
-```
-
-**Step 5 — Update viewer:**
-Change `SPLAT_CANDIDATES[0]` in `app/static/index.html` to `scene_pruned.splat`.
-Verify the room looks cleaner with the floaters gone.
-
-### Print targets
-```
-Original:       2,410,031 Gaussians
-After opacity:  ~1,200,000 (target: keep ~50%)
-After density:  ~900,000   (target: remove ~25% of remaining)
-After bbox:     ~800,000   (target: final clean scene)
-File size:      ~25MB .splat  (vs 74MB now)
-```
-
-### Tune if needed
-If the scene looks over-pruned (missing walls/furniture):
-- Lower `OPACITY_THRESH` to 0.05
-- Lower `min_neighbours` to 3
-- Widen the bbox clip
-
-If floaters still visible:
-- Raise `OPACITY_THRESH` to 0.15
-- Raise `min_neighbours` to 10
-- Tighten the bbox clip
-
----
-
----
-
-## Session 9 Investigation — Camera-Based Pruning (2026-05-24)
-
-### Goal
-Attempt stronger floater removal using distance-to-camera filter.
-
-### Key Finding: Camera→PLY Transform Is Broken
-- `applied_scale_yup = 0.1043` is wrong for placing cameras in PLY space
-- Camera Y normalised: [-0.58, 0.38]; × (1/0.1043) = [-5.55, 3.64] — outside room bounds
-- Empirical Y-scale needed: ~3.27 (not 9.59). PLY and camera normalisation used **different scales**.
-- `applied_transform_yup` R matrix is a ~45° arbitrary rotation — all transform attempts failed
-- Result: dist-to-camera filter unreliable; cameras placed incorrectly in PLY space
-
-### Sparse Point Cloud Anchor — Most Promising Alternative
-Files available:
-- `data/colmap_v3/sparse/0/0/points3D.ply` — 103K COLMAP pts (raw Z-up COLMAP space)
-- `data/vggt_out/sparse/points.ply` — 100K VGGT pts (unknown space)
-- `data/vggt_out_v2/sparse/points.ply` — 100K VGGT pts v2
-
-**Key unknown**: which sparse cloud is in the same coordinate space as `scene_aligned.ply`?
-Need to check XYZ ranges: scene_aligned hi-opacity bounds ≈ X[-6,6] Y[-2,1] Z[-6,7].
-
-### Next Step: Sparse Anchor Pruner
-1. Check ranges of all 3 sparse clouds vs scene_aligned bounds (quick python script)
-2. Build KD-tree from whichever matches PLY space
-3. Keep Gaussian if dist_to_nearest_anchor < 0.5m OR (height ok AND opacity>0.01 AND scale<0.3)
-4. Expected: removes 15-25% additional floaters vs current scene_pruned.ply
-
-### Fallback: Statistical Outlier Removal (no camera/transform needed)
-- For each Gaussian, count neighbours within r=0.15m
-- Remove if count < 5 (isolated floater)
-- Already partially done in session 8 density filter — but tighter radius may help
-- Risk: may remove thin features (curtain edges, chair legs)
+### Other changes
+- Intro orbit removed — scene opens directly at HOME_POS
+- Sidebar shows only 5 confirmed objects; false positives hidden
+- Clicking a sidebar row flies camera to that object's exact position
+- Tour dots updated to match 5-object tour
 
 ---
 
 ## ✅ Session 10 — Semantic Painting (2026-05-24)
 
-### What was done
-1. **Re-ran SAM2 semantics on v2 frames** (bluestreak): 641 frames from `data/video_frames_v2/`
-   - 226s at 2.8fps on RTX 4070 Ti → `outputs/semantic_v2/frame_00001.json` … `frame_00641.json`
-   - Frame naming fixed: v2 uses 5-digit zero-padding matching `transforms.json`
-   - Old `outputs/semantic/` used 4-digit naming from v1 video — wrong frames entirely
+1. Re-ran SAM2 semantics on v2 frames (641 frames, bluestreak RTX 4070 Ti)
+2. Fixed frame matching bug in `paint_semantic_gaussians.py` (numeric stem matching)
+3. Semantic painting on `scene_aligned.ply`: 78% Gaussians labeled, 35% tint strength
+4. Generated per-object highlight splats (`scripts/gen_highlight_splats.py`)
+5. `semantic_class.npy` saved — exact per-Gaussian class labels (used for centroid diagnosis)
 
-2. **Fixed frame matching bug** in `paint_semantic_gaussians.py`:
-   - Old code: exact stem match → 0 frames matched
-   - Fix: numeric matching `int(stem.replace('frame_',''))` → 539/539 matched
+---
 
-3. **Ran semantic painting** on `scene_aligned.ply` (full 2.41M Gaussians):
-   - `--tint_strength 0.35 --dim_factor 1.0` — 65% original + 35% class color
-   - 1,878,707 / 2,410,031 Gaussians labeled (78.0%)
-   - `f_rest` SH preserved → photorealistic tinted appearance
-   - `semantic_class.npy` saved for exact per-Gaussian class lookup
+## ✅ Session 8 — Prune Floaters (2026-05-24)
 
-4. **Generated per-object highlight splats** (`scripts/gen_highlight_splats.py`):
-   - 10 x full-color object splats in `outputs/splat_v4/highlights/`
+`scripts/prune_floaters.py`: opacity filter (>0.30) + density filter (≥5 neighbours, r=0.1m)
+Result: 2.41M → 1.22M Gaussians (302MB PLY / 39MB splat)
 
-5. **Viewer updated**:
-   - Primary splat → `scene_semantic.splat` (77MB)
-   - Sidebar: color dot + name + confidence % badge per object
-   - `splatAlphaRemovalThreshold: 1` → denser point cloud
-   - `objects_3d_yup.json` with Y-up centroids
+---
 
-### Semantic label coverage
+## ✅ Session 7 — Floor Alignment (2026-05-24)
+
+`scripts/realign_splat_v4.py`: Z-up → Y-up (−90° around X) + 2.73° SVD tilt correction
+Key lesson: use lowest 1% hi-opacity Gaussians for SVD (not 10% — floaters contaminate)
+
+---
+
+## 🚀 NEXT: Hugging Face Spaces Deployment
+
+### Goal
+Host the viewer publicly at `https://huggingface.co/spaces/JesonRamesh/roboscene-plus`
+so anyone can open it in a browser without running a local server.
+
+### What needs to go up
+
+| File | Size | Where |
+|---|---|---|
+| `outputs/splat_v4/scene_aligned.splat` | 74MB | HF Dataset |
+| `outputs/objects_3d_yup.json` | ~5KB | HF Dataset or inline |
+| `app/static/index.html` | ~50KB | HF Space (static) |
+
+### Step-by-step plan
+
+**Step 1 — Upload splat to HF Dataset**
+```bash
+# Install HF CLI if needed
+pip install huggingface_hub
+
+# Login
+huggingface-cli login  # paste HF_TOKEN
+
+# Upload the splat file
+huggingface-cli upload JesonRamesh/roboscene-data \
+  outputs/splat_v4/scene_aligned.splat \
+  scene_aligned.splat \
+  --repo-type dataset
+
+# Upload objects JSON
+huggingface-cli upload JesonRamesh/roboscene-data \
+  outputs/objects_3d_yup.json \
+  objects_3d_yup.json \
+  --repo-type dataset
 ```
-bed 31.9%  door 15.0%  desk 7.0%  chair 6.9%  shelf 5.3%
-laptop 5.1%  window 2.2%  monitor 1.7%  fan 1.5%  lamp 1.3%
-unlabeled 22.0%
+
+**Step 2 — Get the raw file URLs**
+After upload, files are served at:
 ```
+https://huggingface.co/datasets/JesonRamesh/roboscene-data/resolve/main/scene_aligned.splat
+https://huggingface.co/datasets/JesonRamesh/roboscene-data/resolve/main/objects_3d_yup.json
+```
+
+**Step 3 — Update index.html for HF deployment**
+Change `SPLAT_CANDIDATES[0]` and `OBJECTS_URL` to the HF Dataset raw URLs.
+The viewer is pure static HTML — no server needed.
+
+**Step 4 — Create static HF Space**
+```bash
+# Clone the Space repo
+git clone https://huggingface.co/spaces/JesonRamesh/roboscene-plus
+cd roboscene-plus
+
+# Copy viewer
+cp ~/Downloads/3D-Spatial-Reconstruction/app/static/index.html index.html
+
+# HF static Spaces need a README.md with metadata
+cat > README.md << 'EOF'
+---
+title: RoboScene+
+emoji: ⬡
+colorFrom: blue
+colorTo: purple
+sdk: static
+pinned: false
+---
+EOF
+
+git add . && git commit -m "deploy: futuristic 3D semantic viewer"
+git push
+```
+
+**Step 5 — Verify**
+Open `https://huggingface.co/spaces/JesonRamesh/roboscene-plus` in a browser.
+The splat should load from the HF Dataset CDN. Test Tour button and sidebar clicks.
+
+### CORS note
+HF Dataset files are served with permissive CORS headers — `fetch()` from the Space
+to the Dataset will work without a proxy.
+
+### Fallback if splat is too large
+74MB may be slow on HF CDN. If load time > 15s, switch to `scene_pruned.splat` (39MB).
+Update `SPLAT_CANDIDATES[0]` accordingly.
 
 ---
 
@@ -247,13 +203,13 @@ unlabeled 22.0%
 
 | # | Task | Status | Notes |
 |---|---|---|---|
-| 1 | Prune floaters | ✅ Done | `scene_pruned.splat` (39MB, 1.22M Gaussians) |
-| 2 | Semantic painting | ✅ Done | `scene_semantic.splat` generated (78% labeled) — not shown in viewer (too noisy) |
-| 3 | Viewer | ✅ Done | Clean splat with sidebar legend: color swatch + object name + frame count |
-| 4 | Fix object centroids | 🔧 Needed | Monitor + window centroids wrong; recompute from `semantic_class.npy` cluster means |
-| 5 | Fix object volumes | 🔧 Needed | Run `fix_volumes.py` → accurate bboxes + `objects_3d_v4.json` |
-| 6 | HF Spaces deploy | ⏳ Pending | Upload `scene_aligned.splat` + `objects_3d_yup.json` to HF Dataset, push static Space |
-| 7 | README.md | ⏳ Pending | Demo link, pipeline diagram, SAM2 detection novel contribution |
+| 1 | Floor alignment | ✅ Done | `scene_aligned.splat` (74MB, Y-up) |
+| 2 | Prune floaters | ✅ Done | `scene_pruned.splat` (39MB, 1.22M Gaussians) |
+| 3 | Semantic painting | ✅ Done | `semantic_class.npy` + per-object highlights |
+| 4 | Viewer UI | ✅ Done | Futuristic neon UI, onboarding overlay, fixed tour |
+| 5 | Tour navigation | ✅ Done | 5 manually-captured stops, correct coordinate space |
+| 6 | HF Spaces deploy | 🚀 Next | Upload splat to HF Dataset, push static Space |
+| 7 | README.md | ⏳ Pending | Demo link, pipeline diagram, novel contribution write-up |
 
 ---
 
@@ -261,23 +217,33 @@ unlabeled 22.0%
 
 ```
 outputs/splat_v4/
-  scene.ply                ← original from bluestreak (Z-up)
-  scene_aligned.ply        ← Y-up aligned (current working version)
-  scene_aligned.splat      ← loaded in viewer now
-  scene_semantic.ply       ← semantic painted (Z-up coords — stale, redo after pruning)
+  scene_aligned.splat      ← PRIMARY — loaded in viewer (74MB)
+  scene_pruned.splat       ← fallback if 74MB too slow for HF (39MB)
+  semantic_class.npy       ← per-Gaussian class labels (uint8, 2.41M entries)
+
+outputs/
+  objects_3d_yup.json      ← object metadata (frames_seen, confidence)
+
+app/static/index.html      ← complete self-contained viewer
+open_viewer.py             ← local dev server (port 8080)
 
 scripts/
-  realign_splat_v4.py      ← Z-up→Y-up + floor tilt fix ✅
-  convert_to_splat.py      ← PLY→.splat converter ✅
-  paint_semantic_gaussians.py  ← semantic painting (needs re-run on pruned PLY)
-  fix_volumes.py           ← DBSCAN bbox cleanup
-
-app/static/index.html      ← viewer (HOME_POS/HOME_LOOK set, scene_aligned.splat loaded)
-open_viewer.py             ← local dev server (port 8080)
-data/colmap_v4/transforms.json  ← camera poses (Y-up, used for training)
+  realign_splat_v4.py      ← Z-up→Y-up alignment
+  prune_floaters.py        ← opacity + density pruning
+  paint_semantic_gaussians.py  ← semantic tinting
+  gen_highlight_splats.py  ← per-object splat generation
+  convert_to_splat.py      ← PLY→.splat converter
 ```
 
 ---
+
+## Mac Quick Start
+
+```bash
+cd ~/Downloads/3D-Spatial-Reconstruction
+python3 open_viewer.py
+# open http://localhost:8080/app/static/index.html
+```
 
 ## Bluestreak Quick Connect (if GPU needed)
 
@@ -287,14 +253,6 @@ bash
 source /opt/Python/Python-3.11.5_Setup.csh
 source /scratch0/jrameshs/roboscene_env/bin/activate
 cd /scratch0/jrameshs/roboscene-plus
-```
-
-## Mac Quick Start
-
-```bash
-cd ~/Downloads/3D-Spatial-Reconstruction
-python3 open_viewer.py
-# open http://localhost:8080/app/static/index.html
 ```
 
 ---
