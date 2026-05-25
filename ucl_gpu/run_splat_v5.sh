@@ -37,6 +37,12 @@ export PYTHONPATH="/scratch0/jrameshs/vggt:$PYTHONPATH"
 export PIP_CACHE_DIR="/scratch0/jrameshs/pip_cache"
 export HF_HOME="/scratch0/jrameshs/hf_cache"
 
+# CRITICAL: Redirect ALL caches to scratch (home dir is only 10GB)
+export TORCH_EXTENSIONS_DIR="/scratch0/jrameshs/torch_extensions"
+export TMPDIR="/scratch0/jrameshs/tmp"
+export XDG_CACHE_HOME="/scratch0/jrameshs/cache"
+mkdir -p "$TORCH_EXTENSIONS_DIR" "$TMPDIR" "$XDG_CACHE_HOME"
+
 nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader
 python3 -c "import torch; print('CUDA:', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 
@@ -88,7 +94,18 @@ python3 scripts/train_splat.py \
     --prune_opa   0.005
 
 if [ ! -f "$OUT_DIR/scene.ply" ]; then
-    echo "ERROR: scene.ply not produced. Check training log."
+    echo "  scene.ply not found — exporting from checkpoint..."
+    CKPT=$(ls "$OUT_DIR/ckpts/"ckpt_*_rank0.pt 2>/dev/null | sort -V | tail -1)
+    if [ -z "$CKPT" ]; then
+        echo "ERROR: No checkpoint in $OUT_DIR/ckpts/ — training failed."
+        exit 1
+    fi
+    echo "  Checkpoint: $CKPT"
+    python3 scripts/export_splat_ply.py --ckpt "$CKPT" --output "$OUT_DIR/scene.ply"
+fi
+
+if [ ! -f "$OUT_DIR/scene.ply" ]; then
+    echo "ERROR: scene.ply still missing after export. Check logs."
     exit 1
 fi
 echo "  ✓ scene.ply: $(du -h $OUT_DIR/scene.ply | cut -f1)"
