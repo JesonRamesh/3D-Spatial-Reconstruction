@@ -39,6 +39,12 @@ export PIP_CACHE_DIR="/scratch0/jrameshs/pip_cache"
 export HF_HOME="/scratch0/jrameshs/hf_cache"
 export PYTORCH_ENABLE_MPS_FALLBACK=1
 
+# CRITICAL: Redirect ALL caches to scratch (home dir is only 10GB)
+export TORCH_EXTENSIONS_DIR="/scratch0/jrameshs/torch_extensions"
+export TMPDIR="/scratch0/jrameshs/tmp"
+export XDG_CACHE_HOME="/scratch0/jrameshs/cache"
+mkdir -p "$TORCH_EXTENSIONS_DIR" "$TMPDIR" "$XDG_CACHE_HOME"
+
 nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader
 python3 -c "import torch; print('CUDA:', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 

@@ -306,6 +306,7 @@
   <span class="logo-tag">3D Semantic Viewer</span>
   <div class="spacer"></div>
   <span id="load-indicator"></span>
+  <button class="tbtn" id="view-toggle" onclick="toggleViewMode()">⬡ Point Cloud</button>
   <button class="tbtn" id="tour-btn" onclick="toggleTour()">▶ Tour</button>
   <button class="tbtn" id="reset-btn" onclick="resetCam()">⌀ Reset</button>
 </div>
@@ -379,20 +380,35 @@
 
 <script type="module">
 import * as THREE from 'three';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as GS from
   'https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/build/gaussian-splats-3d.module.min.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 const HF_BASE = 'https://huggingface.co/datasets/jeeeeeeeson/roboscene-data/resolve/main';
-const SPLAT_CANDIDATES = [
-  HF_BASE + '/scene_pruned.splat',
-  // local fallbacks (dev server)
+const IS_LOCAL = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+const SPLAT_CANDIDATES = IS_LOCAL ? [
+  // local dev — semantic first
+  '/outputs/splat_v4/scene_semantic_v3.splat',
   '/outputs/splat_v4/scene_pruned.splat',
   '/outputs/splat_v4/scene_aligned.splat',
-  '/outputs/splat_v4/scene.splat',
+] : [
+  // production (HF Space)
+  HF_BASE + '/scene_semantic_v3.splat',
+  HF_BASE + '/scene_pruned.splat',
 ];
 const OBJECTS_URL          = HF_BASE + '/objects_3d_yup.json';
 const OBJECTS_URL_FALLBACK = '/outputs/objects_3d_yup.json';
+
+const PC_CANDIDATES = IS_LOCAL ? [
+  '/outputs/scene_pointcloud_web.ply',
+  '/outputs/scene_pointcloud.ply',
+  '/data/vggt_out_v3/dense_pointcloud.ply',
+] : [
+  HF_BASE + '/scene_pointcloud_web.ply',
+  HF_BASE + '/scene_pointcloud.ply',
+];
 
 const COLORS = {
   bed:'#FFB6C1', desk:'#20B2AA', chair:'#4682B4', laptop:'#6495ED',
@@ -413,6 +429,120 @@ let touring  = false;
 
 let anim = null;
 
+// ── Point cloud state ──────────────────────────────────────────────────────────
+let viewMode   = 'splat';
+let pcLoaded   = false;
+let pcRenderer = null, pcScene = null, pcCamera = null, pcControls = null, pcDomEl = null;
+
+async function bestPcUrl() {
+  for (const url of PC_CANDIDATES) {
+    try { const r = await fetch(url, { method:'HEAD' }); if (r.ok) return url; } catch(_) {}
+  }
+  return null;
+}
+
+async function initPointCloud() {
+  const label = document.getElementById('load-indicator');
+
+  if (pcLoaded) {
+    // Already loaded — make canvas visible again and restart the render loop
+    if (pcDomEl) pcDomEl.style.display = 'block';
+    (function loop(){ if (viewMode==='pointcloud'){ pcControls.update(); pcRenderer.render(pcScene,pcCamera); requestAnimationFrame(loop); } })();
+    return;
+  }
+
+  const pcUrl = await bestPcUrl();
+  if (!pcUrl) { label.textContent = 'No point cloud found'; return; }
+
+  // Capture splat camera before hiding it
+  const startPos  = viewer?.camera ? viewer.camera.position.clone() : new THREE.Vector3(...HOME_POS);
+  const startLook = viewer?.controls?.target ? viewer.controls.target.clone()
+                                              : new THREE.Vector3(...HOME_LOOK);
+
+  // Create a fresh canvas — avoids CSS conflicts with GS canvas
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:fixed;inset:0;z-index:0;';
+  document.body.appendChild(canvas);
+  pcDomEl = canvas;
+
+  pcScene = new THREE.Scene();
+  pcScene.background = new THREE.Color(0x08080f);
+
+  pcCamera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.001, 200);
+  pcCamera.position.copy(startPos);
+  pcCamera.up.set(0,1,0);
+
+  pcRenderer = new THREE.WebGLRenderer({ canvas, antialias:false });
+  pcRenderer.setSize(innerWidth, innerHeight);
+  pcRenderer.setPixelRatio(devicePixelRatio);
+
+  pcControls = new OrbitControls(pcCamera, canvas);
+  pcControls.target.copy(startLook);
+  pcControls.enableDamping = true;
+  pcControls.dampingFactor = 0.06;
+  pcControls.screenSpacePanning = false;
+  pcControls.update();
+
+  label.textContent = 'Loading point cloud…';
+  const loader = new PLYLoader();
+  loader.load(pcUrl, geo => {
+    geo.computeBoundingBox();
+
+    // PLYLoader stores uchar RGB as normalised floats in a 'color' attribute
+    // If absent or values look like 0-255 range, fix them
+    let colorAttr = geo.getAttribute('color');
+    if (colorAttr) {
+      let maxV = 0;
+      for (let i = 0; i < Math.min(colorAttr.array.length, 600); i++) maxV = Math.max(maxV, colorAttr.array[i]);
+      if (maxV > 1.5) { // stored as 0-255, normalise
+        for (let i = 0; i < colorAttr.array.length; i++) colorAttr.array[i] /= 255;
+        colorAttr.needsUpdate = true;
+      }
+    }
+
+    const mat = new THREE.PointsMaterial({
+      size: 0.005, sizeAttenuation: true,
+      vertexColors: !!colorAttr,
+    });
+    if (!colorAttr) mat.color.set(0x00d4ff); // cyan fallback if no vertex colors
+
+    pcScene.add(new THREE.Points(geo, mat));
+    pcLoaded = true;
+    label.textContent = pcUrl.split('/').pop();
+
+    (function loop(){ if (viewMode==='pointcloud'){ pcControls.update(); pcRenderer.render(pcScene,pcCamera); requestAnimationFrame(loop); } })();
+  },
+  xhr => { if (xhr.total) label.textContent = `PC ${(xhr.loaded/1e6).toFixed(0)}/${(xhr.total/1e6).toFixed(0)} MB`; },
+  err => { console.error(err); label.textContent = 'PC load failed'; });
+}
+
+function toggleViewMode() {
+  const btn      = document.getElementById('view-toggle');
+  const gsCanvas = viewer?.renderer?.domElement;
+
+  if (viewMode === 'splat') {
+    viewMode = 'pointcloud';
+    viewer?.stop?.();                          // pause GS render loop (power drain fix)
+    if (gsCanvas) gsCanvas.style.display = 'none';
+    btn.textContent = '⬡ Splat View';
+    btn.style.color = 'var(--accent2)';
+    initPointCloud(); // creates its own canvas + appends to body
+  } else {
+    // Sync point cloud camera back to splat before hiding
+    if (pcCamera && viewer?.camera) {
+      viewer.camera.position.copy(pcCamera.position);
+      if (viewer.controls?.target && pcControls) viewer.controls.target.copy(pcControls.target);
+    }
+    viewMode = 'splat';
+    if (pcDomEl) pcDomEl.style.display = 'none';
+    if (gsCanvas) gsCanvas.style.display = 'block';
+    viewer?.start?.();                         // resume GS render loop
+    btn.textContent = '⬡ Point Cloud';
+    btn.style.color = '';
+  }
+}
+window.toggleViewMode = toggleViewMode;
+
 const ldBar    = document.getElementById('ld-bar');
 const ldMsg    = document.getElementById('ld-msg');
 const lblLayer = document.getElementById('lbl-layer');
@@ -428,31 +558,55 @@ function cam()      { return viewer?.camera; }
 function controls() { return viewer?.controls; }
 
 function flyTo(toPos, toLook, dur = 1800, onDone = null) {
-  if (!cam()) return;
-  const ctrl = controls();
-  const fromP = cam().position.clone();
-  const fromL = ctrl ? ctrl.target.clone() : new THREE.Vector3(...HOME_LOOK);
-  if (ctrl) ctrl.enabled = false;
-  anim = {
-    fromP, toP: new THREE.Vector3(...toPos),
-    fromL, toL: new THREE.Vector3(...toLook),
-    t0: performance.now(), dur, onDone, done: false,
-  };
+  if (viewMode === 'pointcloud') {
+    if (!pcCamera) return;
+    const fromP = pcCamera.position.clone();
+    const fromL = pcControls ? pcControls.target.clone() : new THREE.Vector3(...HOME_LOOK);
+    if (pcControls) pcControls.enabled = false;
+    anim = {
+      fromP, toP: new THREE.Vector3(...toPos),
+      fromL, toL: new THREE.Vector3(...toLook),
+      t0: performance.now(), dur, onDone, done: false, mode: 'pointcloud',
+    };
+  } else {
+    if (!cam()) return;
+    const ctrl = controls();
+    const fromP = cam().position.clone();
+    const fromL = ctrl ? ctrl.target.clone() : new THREE.Vector3(...HOME_LOOK);
+    if (ctrl) ctrl.enabled = false;
+    anim = {
+      fromP, toP: new THREE.Vector3(...toPos),
+      fromL, toL: new THREE.Vector3(...toLook),
+      t0: performance.now(), dur, onDone, done: false, mode: 'splat',
+    };
+  }
 }
 
 function tickAnim(now) {
   if (!anim || anim.done) return;
   const t = Math.min((now - anim.t0) / anim.dur, 1);
   const e = easeIO(t);
-  cam().position.lerpVectors(anim.fromP, anim.toP, e);
-  const ctrl = controls();
-  if (ctrl) { ctrl.target.lerpVectors(anim.fromL, anim.toL, e); ctrl.update(); }
-  if (t >= 1) {
-    anim.done = true;
-    if (ctrl) ctrl.enabled = true;
-    const cb = anim.onDone;
-    anim = null;   // null BEFORE callback so flyTo() calls inside cb aren't overwritten
-    cb?.();
+  if (anim.mode === 'pointcloud') {
+    pcCamera.position.lerpVectors(anim.fromP, anim.toP, e);
+    if (pcControls) { pcControls.target.lerpVectors(anim.fromL, anim.toL, e); pcControls.update(); }
+    if (t >= 1) {
+      anim.done = true;
+      if (pcControls) pcControls.enabled = true;
+      const cb = anim.onDone;
+      anim = null;
+      cb?.();
+    }
+  } else {
+    cam().position.lerpVectors(anim.fromP, anim.toP, e);
+    const ctrl = controls();
+    if (ctrl) { ctrl.target.lerpVectors(anim.fromL, anim.toL, e); ctrl.update(); }
+    if (t >= 1) {
+      anim.done = true;
+      if (ctrl) ctrl.enabled = true;
+      const cb = anim.onDone;
+      anim = null;   // null BEFORE callback so flyTo() calls inside cb aren't overwritten
+      cb?.();
+    }
   }
 }
 
@@ -741,7 +895,7 @@ async function main() {
   });
 
   try {
-    await viewer.addSplatScene(loadUrl, {
+    await viewer.addSplatScene(splatUrl, {
       splatAlphaRemovalThreshold: 5,
       showLoadingUI: false,
     });
@@ -800,9 +954,10 @@ async function main() {
 // ── Resize ──────────────────────────────────────────────────────────────────────
 window.addEventListener('resize', () => {
   if (!cam()) return;
-  cam().aspect = window.innerWidth / window.innerHeight;
+  cam().aspect = innerWidth / innerHeight;
   cam().updateProjectionMatrix();
-  viewer.renderer?.setSize(window.innerWidth, window.innerHeight);
+  viewer.renderer?.setSize(innerWidth, innerHeight);
+  if (pcCamera) { pcCamera.aspect = innerWidth/innerHeight; pcCamera.updateProjectionMatrix(); pcRenderer?.setSize(innerWidth, innerHeight); }
 });
 
 // ── Keyboard shortcuts ──────────────────────────────────────────────────────────

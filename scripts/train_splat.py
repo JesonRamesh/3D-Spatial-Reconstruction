@@ -240,13 +240,20 @@ def run_gsplat_training(
         "--result_dir", str(output_dir),
         "--max_steps", str(iterations),
         "--data_factor", "1",
-        "--prune_opa", str(prune_opa),
+        # gsplat v1.3.0 uses tyro: prune_opa lives under strategy (DefaultStrategy)
+        "--strategy.prune-opa", str(prune_opa),
+        # Only eval+save at final step (avoids imageio video render crash mid-training)
+        "--eval-steps", str(iterations),
+        "--save-steps", str(iterations),
+        # Disable viewer (not needed for headless training)
+        "--disable-viewer",
     ]
-    # Regularizers: only pass when non-zero (older gsplat builds may not have them)
+    # Regularizers: top-level Config fields in gsplat v1.3.0
+    # tyro converts underscores to hyphens in CLI args
     if opacity_reg > 0:
-        cmd += ["--opacity_reg", str(opacity_reg)]
+        cmd += ["--opacity-reg", str(opacity_reg)]
     if scale_reg > 0:
-        cmd += ["--scale_reg", str(scale_reg)]
+        cmd += ["--scale-reg", str(scale_reg)]
 
     logger.info("=" * 62)
     logger.info("  Launching gsplat simple_trainer")

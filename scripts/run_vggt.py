@@ -1030,6 +1030,12 @@ def main():
                 n_overlap=n_ov,
                 logger=logger,
             )
+            # Re-unproject world_points using the stitched extrinsic so the dense
+            # PLY is in the global coordinate frame, not the batch-local frame.
+            # Bug: unproject_depth_map_to_point_map() inside run_inference_batch()
+            # used the pre-stitch extrinsic. Without this line, all_world_points
+            # contains per-batch local-frame geometry that stacks into a distorted cloud.
+            world_points = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
 
         # Store results (for overlapping batches, drop the overlap frames at the
         # start since they were already stored in the previous batch)
