@@ -159,6 +159,41 @@ def write_ply_xyz_rgb(pts: np.ndarray, rgb: np.ndarray, path: Path, logger: logg
     logger.info(f"  Wrote {n:,} points → {path}  ({size_mb:.0f}MB)")
 
 
+# ── Statistical outlier removal ───────────────────────────────────────
+
+def remove_outliers(pts: np.ndarray, rgb: np.ndarray,
+                    nb_neighbors: int, std_ratio: float,
+                    logger: logging.Logger):
+    """
+    Remove points whose mean distance to their k nearest neighbors is more
+    than std_ratio standard deviations above the global mean. Pure numpy/scipy —
+    no open3d needed. On 16M points this takes ~60s on Mac M4 Pro.
+    """
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError:
+        logger.warning("  scipy not available — skipping outlier removal")
+        return pts, rgb
+
+    logger.info(f"  Statistical outlier removal (k={nb_neighbors}, std={std_ratio})...")
+    t0 = time.time()
+
+    # KD-tree query: k+1 because the point itself is included at dist=0
+    tree = cKDTree(pts)
+    dists, _ = tree.query(pts, k=nb_neighbors + 1, workers=-1)
+    mean_dists = dists[:, 1:].mean(axis=1)          # exclude self
+
+    threshold = mean_dists.mean() + std_ratio * mean_dists.std()
+    inliers = mean_dists < threshold
+
+    pts_out = pts[inliers]
+    rgb_out = rgb[inliers]
+    n_removed = int((~inliers).sum())
+    logger.info(f"  Removed {n_removed:,} outliers in {time.time()-t0:.1f}s → "
+                f"{len(pts_out):,} points remain")
+    return pts_out, rgb_out
+
+
 # ── Voxel downsample ───────────────────────────────────────────────────
 
 def voxel_downsample(pts: np.ndarray, rgb: np.ndarray,
@@ -299,6 +334,24 @@ def main():
         "--up_axis", type=int, default=1, choices=[1, 2],
         help="Up axis for top-down view: 1=Y (default, Y-up after alignment), 2=Z",
     )
+    parser.add_argument(
+        "--remove_outliers", action="store_true", default=True,
+        help="Remove statistical outliers using k-NN distance (default: on). "
+             "Requires scipy. Adds ~60s on 16M points.",
+    )
+    parser.add_argument(
+        "--no_remove_outliers", dest="remove_outliers", action="store_false",
+        help="Skip outlier removal (faster).",
+    )
+    parser.add_argument(
+        "--outlier_neighbors", type=int, default=20,
+        help="k-NN neighbors for outlier removal (default: 20)",
+    )
+    parser.add_argument(
+        "--outlier_std", type=float, default=2.0,
+        help="Std-dev multiplier for outlier threshold (default: 2.0). "
+             "Lower = more aggressive removal.",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -345,6 +398,12 @@ def main():
 
     # Voxel dedup (in case bluestreak PLY has minor overlap at batch boundaries)
     xyz, rgb = voxel_downsample(xyz, rgb, args.voxel_size, logger)
+
+    # Statistical outlier removal — removes stray points in empty space
+    if args.remove_outliers:
+        xyz, rgb = remove_outliers(
+            xyz, rgb, args.outlier_neighbors, args.outlier_std, logger
+        )
 
     # Global cap
     if len(xyz) > args.max_points:

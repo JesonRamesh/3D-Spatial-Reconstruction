@@ -5,8 +5,8 @@ import struct
 import numpy as np
 from pathlib import Path
 
-INPUT_PLY  = "outputs/splat_v4/scene.ply"
-OUTPUT_PLY = "outputs/splat_v4/scene_aligned.ply"
+INPUT_PLY  = "outputs/splat_v5/scene.ply"
+OUTPUT_PLY = "outputs/splat_v5/scene_aligned.ply"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PLY I/O  (pure numpy, no plyfile dependency)
@@ -298,4 +298,11 @@ def main():
 
 
 if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="Align 3DGS PLY to Y-up with tilt correction")
+    ap.add_argument("--input_ply",  default=INPUT_PLY,  help="Input scene PLY (Z-up)")
+    ap.add_argument("--output_ply", default=OUTPUT_PLY, help="Output aligned PLY (Y-up)")
+    a = ap.parse_args()
+    INPUT_PLY  = a.input_ply
+    OUTPUT_PLY = a.output_ply
     main()

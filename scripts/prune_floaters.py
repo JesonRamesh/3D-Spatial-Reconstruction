@@ -220,4 +220,11 @@ def main():
 
 
 if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="Prune floater Gaussians from a 3DGS PLY")
+    ap.add_argument("--input_ply",  default=INPUT_PLY,  help="Input aligned PLY")
+    ap.add_argument("--output_ply", default=OUTPUT_PLY, help="Output pruned PLY")
+    a = ap.parse_args()
+    INPUT_PLY  = a.input_ply
+    OUTPUT_PLY = a.output_ply
     main()

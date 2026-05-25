@@ -220,6 +220,9 @@ def run_gsplat_training(
     output_dir: Path,
     iterations: int,
     logger: logging.Logger,
+    opacity_reg: float = 0.0,
+    scale_reg: float = 0.0,
+    prune_opa: float = 0.005,
 ) -> tuple:
     """
     Launch gsplat simple_trainer.py as a subprocess using sys.executable.
@@ -237,9 +240,13 @@ def run_gsplat_training(
         "--result_dir", str(output_dir),
         "--max_steps", str(iterations),
         "--data_factor", "1",
-        "",
-        "",
+        "--prune_opa", str(prune_opa),
     ]
+    # Regularizers: only pass when non-zero (older gsplat builds may not have them)
+    if opacity_reg > 0:
+        cmd += ["--opacity_reg", str(opacity_reg)]
+    if scale_reg > 0:
+        cmd += ["--scale_reg", str(scale_reg)]
 
     logger.info("=" * 62)
     logger.info("  Launching gsplat simple_trainer")
@@ -399,6 +406,15 @@ def main():
                         help="Number of training iterations (default: 15000)")
     parser.add_argument("--frames_dir", type=str, default="data/frames",
                         help="Frames directory (used to create images/ symlink if needed)")
+    parser.add_argument("--opacity_reg", type=float, default=0.0,
+                        help="Opacity regularization weight (default: 0.0). "
+                             "Use 0.01 to suppress floater Gaussians during training.")
+    parser.add_argument("--scale_reg", type=float, default=0.0,
+                        help="Scale regularization weight (default: 0.0). "
+                             "Use 0.001 to penalize oversized/elongated Gaussians.")
+    parser.add_argument("--prune_opa", type=float, default=0.005,
+                        help="Opacity threshold for pruning Gaussians (default: 0.005). "
+                             "Increase to 0.01 for more aggressive pruning.")
     args = parser.parse_args()
 
     # Resolve project root
@@ -462,6 +478,9 @@ def main():
         output_dir=output_dir,
         iterations=args.iterations,
         logger=logger,
+        opacity_reg=args.opacity_reg,
+        scale_reg=args.scale_reg,
+        prune_opa=args.prune_opa,
     )
 
     if not success:
