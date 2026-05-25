@@ -45,6 +45,9 @@ outputs/highlights/
 models/
 weights/
 
+# ── Planning docs (local only, not for commit) ───────────────────
+PLAN.md
+
 # ── Temp / debug ─────────────────────────────────────────────────
 tmp/
 logs/*.log

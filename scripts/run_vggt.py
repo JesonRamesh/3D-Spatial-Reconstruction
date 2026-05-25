@@ -601,6 +601,190 @@ def sort_frames_by_similarity(
     return sorted_paths, order
 
 
+# ── Dense point cloud builder ──────────────────────────────────────────
+
+def save_filtered_dense_ply(
+    world_points: np.ndarray,
+    depth_map: np.ndarray,
+    depth_conf: np.ndarray,
+    images_tensor: torch.Tensor,
+    image_names: list,
+    output_dir: Path,
+    logger: logging.Logger,
+    conf_floor: float = 0.15,
+    depth_scale: float = 1.5,
+    border_px: int = 3,
+    stride: int = 2,
+    voxel_size: float = 0.005,
+    max_points: int = 30_000_000,
+):
+    """
+    Apply a 6-stage quality filter to VGGT's dense world_points and write
+    a clean colored PLY. Run on GPU node (bluestreak) directly after inference
+    so only one ~300–500MB PLY needs to be downloaded, not per-frame arrays.
+
+    Stages:
+      1. Confidence floor  — drop pixels with depth_conf < conf_floor (0.15)
+      2. Depth cap         — drop pixels with depth > depth_scale * P95(depth)
+      3. Silhouette guard  — drop pixels within border_px of frame edge
+      4. Stride subsample  — keep every stride-th pixel (stride=2 → 25% of pixels)
+      5. Voxel dedup       — keep one point per voxel_size cube (5mm default)
+      6. Global cap        — randomly subsample to max_points if still over limit
+    """
+    S, H, W, _ = world_points.shape
+    logger.info(f"Building dense point cloud from {S} frames ({H}×{W})...")
+
+    # Precompute per-frame colors at VGGT resolution
+    colors_hwc = F.interpolate(
+        images_tensor.float(),
+        size=(H, W),
+        mode="bilinear",
+        align_corners=False,
+    )  # [S, 3, H, W]
+    colors_hwc = (colors_hwc.cpu().numpy() * 255).astype(np.uint8)
+    colors_hwc = colors_hwc.transpose(0, 2, 3, 1)  # [S, H, W, 3]
+
+    # Build silhouette guard mask (same for every frame given identical H, W)
+    border_mask = np.zeros((H, W), dtype=bool)
+    border_mask[:border_px, :] = True
+    border_mask[-border_px:, :] = True
+    border_mask[:, :border_px] = True
+    border_mask[:, -border_px:] = True
+
+    # Build stride subsample mask
+    stride_mask = np.zeros((H, W), dtype=bool)
+    stride_mask[::stride, ::stride] = True
+
+    all_pts = []
+    all_rgb = []
+    total_raw = 0
+    total_kept = 0
+
+    depth_sq = depth_map.squeeze(-1)  # [S, H, W]
+
+    for i in range(S):
+        conf_i  = depth_conf[i]            # [H, W]
+        depth_i = depth_sq[i]              # [H, W]
+        pts_i   = world_points[i]          # [H, W, 3]
+        rgb_i   = colors_hwc[i]            # [H, W, 3]
+
+        # Stage 1: confidence floor
+        mask = conf_i >= conf_floor
+        # Stage 2: depth cap (per-frame P95)
+        p95 = float(np.percentile(depth_i[mask], 95)) if mask.any() else float(depth_i.max())
+        mask &= depth_i <= depth_scale * p95
+        # Stage 3: silhouette guard
+        mask &= ~border_mask
+        # Stage 4: stride subsample
+        mask &= stride_mask
+
+        n_raw  = mask.size
+        n_kept = int(mask.sum())
+        total_raw  += n_raw
+        total_kept += n_kept
+
+        if n_kept == 0:
+            continue
+
+        all_pts.append(pts_i[mask])   # (n_kept, 3)
+        all_rgb.append(rgb_i[mask])   # (n_kept, 3)
+
+        if (i + 1) % 100 == 0 or i == S - 1:
+            logger.info(f"  Filtered {i + 1}/{S} frames | "
+                        f"kept so far: {sum(len(p) for p in all_pts):,}")
+
+    pts_all = np.concatenate(all_pts, axis=0).astype(np.float32)
+    rgb_all = np.concatenate(all_rgb, axis=0)
+
+    logger.info(f"  After stages 1-4: {len(pts_all):,} points "
+                f"({len(pts_all) / total_raw * 100:.1f}% of {total_raw:,} raw)")
+
+    # Stage 5: voxel dedup
+    logger.info(f"  Voxel dedup at {voxel_size*100:.1f}cm resolution...")
+    vox = np.floor(pts_all / voxel_size).astype(np.int64)
+    vox -= vox.min(axis=0)
+    max_dim = vox.max(axis=0) + 1
+    # Guard against int64 overflow for very large rooms
+    if int(max_dim[0]) * int(max_dim[1]) * int(max_dim[2]) > 2**40:
+        logger.warning("  Room too large for linear voxel index — using random subsample only")
+        unique_idx = np.arange(len(pts_all))
+    else:
+        linear = (vox[:, 0] * max_dim[1] * max_dim[2] +
+                  vox[:, 1] * max_dim[2] +
+                  vox[:, 2])
+        _, unique_idx = np.unique(linear, return_index=True)
+
+    pts_dedup = pts_all[unique_idx]
+    rgb_dedup = rgb_all[unique_idx]
+    logger.info(f"  After voxel dedup: {len(pts_dedup):,} points")
+
+    # Stage 6: global cap
+    if len(pts_dedup) > max_points:
+        keep = np.random.choice(len(pts_dedup), size=max_points, replace=False)
+        pts_dedup = pts_dedup[keep]
+        rgb_dedup = rgb_dedup[keep]
+        logger.info(f"  Global cap applied → {len(pts_dedup):,} points")
+
+    # Write PLY
+    ply_path = output_dir / "dense_pointcloud.ply"
+    _write_ply_xyz_rgb(pts_dedup, rgb_dedup, ply_path)
+    size_mb = ply_path.stat().st_size / 1e6
+    logger.info(f"  Saved: {ply_path}  ({len(pts_dedup):,} points, {size_mb:.0f}MB)")
+
+    # Save stats alongside
+    stats = {
+        "frames": S,
+        "total_raw_pixels": int(total_raw),
+        "after_filter_stages_1_4": int(total_kept),
+        "after_voxel_dedup": int(len(pts_all if len(pts_dedup) < len(pts_all) else pts_dedup)),
+        "final_points": int(len(pts_dedup)),
+        "voxel_size_m": voxel_size,
+        "conf_floor": conf_floor,
+        "depth_scale": depth_scale,
+        "ply_size_mb": round(size_mb, 1),
+    }
+    import json as _json
+    with open(output_dir / "dense_pointcloud_stats.json", "w") as f:
+        _json.dump(stats, f, indent=2)
+
+    return ply_path
+
+
+def _write_ply_xyz_rgb(pts: np.ndarray, rgb: np.ndarray, path: Path):
+    """Write binary little-endian PLY with float XYZ + uchar RGB."""
+    n = len(pts)
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {n}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "property uchar red\n"
+        "property uchar green\n"
+        "property uchar blue\n"
+        "end_header\n"
+    ).encode("ascii")
+
+    # Interleave xyz (float32) and rgb (uint8) into a structured array
+    dt = np.dtype([
+        ("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+        ("r", "u1"),  ("g", "u1"),  ("b", "u1"),
+    ])
+    data = np.empty(n, dtype=dt)
+    data["x"] = pts[:, 0]
+    data["y"] = pts[:, 1]
+    data["z"] = pts[:, 2]
+    data["r"] = rgb[:, 0]
+    data["g"] = rgb[:, 1]
+    data["b"] = rgb[:, 2]
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(header)
+        f.write(data.tobytes())
+
+
 # ── Config loading ─────────────────────────────────────────────────────
 
 def load_config(config_path: Path) -> dict:
@@ -651,6 +835,16 @@ def main():
     )
     parser.add_argument("--dry_run", action="store_true",
                         help="Process only the first 10 frames (diagnostic mode)")
+    parser.add_argument("--save_world_points", action="store_true",
+                        help=(
+                            "Build a filtered dense point cloud (PLY) directly from VGGT's "
+                            "world_points output and save to {output_dir}/dense_pointcloud.ply. "
+                            "Applies a 6-stage quality filter: confidence floor (0.15), depth cap "
+                            "(1.5×P95), silhouette guard (3px border), stride subsample (every 2nd "
+                            "pixel), and voxel dedup (5mm). Output: 15–30M colored points, "
+                            "zero floaters. Download this single PLY file from bluestreak instead "
+                            "of per-frame arrays. Requires ~10 extra seconds on GPU."
+                        ))
     parser.add_argument("--config", type=str, default="config.yaml",
                         help="Path to config.yaml")
     args = parser.parse_args()
@@ -891,7 +1085,20 @@ def main():
     )
     logger.info(f"  COLMAP export: {time.time() - t_colmap:.1f}s")
 
-    # 4. Save reconstruction metadata
+    # 4. Dense colored point cloud (optional — only when --save_world_points)
+    if args.save_world_points:
+        logger.info("Building dense filtered point cloud (--save_world_points)...")
+        save_filtered_dense_ply(
+            world_points=world_points,
+            depth_map=depth_map,
+            depth_conf=depth_conf,
+            images_tensor=images_all,
+            image_names=image_names,
+            output_dir=output_dir,
+            logger=logger,
+        )
+
+    # 5. Save reconstruction metadata
     meta = {
         "total_frames": total_frames,
         "image_names": image_names,
@@ -927,6 +1134,11 @@ def main():
     logger.info(f"  Camera poses:        {output_dir / 'camera_poses.json'}")
     logger.info(f"  COLMAP sparse:       {sparse_dir}/")
     logger.info(f"    Files:             {[f.name for f in colmap_files]}")
+    if args.save_world_points:
+        ply_out = output_dir / "dense_pointcloud.ply"
+        if ply_out.exists():
+            logger.info(f"  Dense point cloud:   {ply_out} "
+                        f"({ply_out.stat().st_size / 1e6:.0f}MB) ← DOWNLOAD THIS")
     logger.info(f"  Metadata:            {meta_path}")
     if args.dry_run:
         logger.info(f"  ⚠️  DRY RUN — only {total_frames} frames processed")

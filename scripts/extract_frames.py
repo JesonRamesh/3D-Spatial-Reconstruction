@@ -220,6 +220,99 @@ def analyse_extracted_frames(output_dir: Path, logger: logging.Logger) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Blur filter
+# ---------------------------------------------------------------------------
+
+def filter_blurry_frames(
+    output_dir: Path,
+    frame_records: list,
+    drop_bottom_pct: float,
+    logger: logging.Logger,
+) -> tuple:
+    """
+    Delete the bottom drop_bottom_pct% of frames ranked by Laplacian sharpness,
+    then renumber the survivors sequentially (frame_0001.jpg, frame_0002.jpg, …).
+
+    Returns (surviving_records, filter_report) where filter_report is a dict
+    suitable for inclusion in the metadata JSON.
+
+    Skips filtering entirely if no sharpness scores are available (OpenCV missing).
+    """
+    scored = [r for r in frame_records if r["sharpness"] >= 0]
+    if not scored:
+        logger.warning(
+            "Blur filter skipped — OpenCV not available. "
+            "Install opencv-python to enable sharpness filtering."
+        )
+        return frame_records, {"skipped": True, "reason": "opencv_unavailable"}
+
+    total = len(scored)
+    n_drop = max(0, int(total * drop_bottom_pct / 100.0))
+
+    if n_drop == 0:
+        logger.info(f"Blur filter: drop_bottom_pct={drop_bottom_pct}% → 0 frames to drop")
+        return frame_records, {"skipped": True, "reason": "nothing_to_drop"}
+
+    # Sort by ascending sharpness to find the threshold
+    by_sharpness = sorted(scored, key=lambda r: r["sharpness"])
+    threshold = by_sharpness[n_drop - 1]["sharpness"]
+    to_drop = {r["filename"] for r in by_sharpness[:n_drop]}
+
+    logger.info(
+        f"Blur filter: dropping bottom {drop_bottom_pct}% "
+        f"({n_drop}/{total} frames, sharpness < {threshold:.1f})"
+    )
+
+    # Delete blurry frames
+    actually_dropped = 0
+    for fname in to_drop:
+        p = output_dir / fname
+        if p.exists():
+            p.unlink()
+            actually_dropped += 1
+            logger.debug(f"  dropped: {fname}")
+
+    # Renumber survivors in sorted order
+    survivors = sorted(output_dir.glob("frame_*.jpg"))
+    for new_idx, p in enumerate(survivors, start=1):
+        new_name = output_dir / f"frame_{new_idx:04d}.jpg"
+        if p.name != new_name.name:
+            p.rename(new_name)
+
+    # Rebuild records for survivors (sharpness already computed, just remap filenames)
+    surviving_names = {f"frame_{i:04d}.jpg" for i in range(1, len(survivors) + 1)}
+    orig_by_name = {r["filename"]: r for r in frame_records}
+
+    # Map old filenames → new sequential names in the order they were sorted
+    old_survivors_sorted = sorted(
+        [r for r in frame_records if r["filename"] not in to_drop],
+        key=lambda r: r["filename"],
+    )
+    surviving_records = []
+    for new_idx, r in enumerate(old_survivors_sorted, start=1):
+        new_r = dict(r)
+        new_r["filename"] = f"frame_{new_idx:04d}.jpg"
+        new_r["frame_index"] = new_idx
+        surviving_records.append(new_r)
+
+    kept = len(surviving_records)
+    logger.info(
+        f"Blur filter complete: {actually_dropped} dropped, "
+        f"{kept} sharp frames kept, renumbered frame_0001..frame_{kept:04d}.jpg"
+    )
+
+    filter_report = {
+        "skipped": False,
+        "drop_bottom_pct": drop_bottom_pct,
+        "frames_before": total,
+        "frames_dropped": actually_dropped,
+        "frames_kept": kept,
+        "sharpness_threshold": round(threshold, 2),
+    }
+    return surviving_records, filter_report
+
+
+# ---------------------------------------------------------------------------
 # Metadata output
 # ---------------------------------------------------------------------------
 
@@ -230,6 +323,7 @@ def save_metadata(
     elapsed_sec: float,
     output_dir: Path,
     logger: logging.Logger,
+    blur_filter_report: dict = None,
 ) -> None:
     """Save extraction metadata as JSON and CSV."""
     import csv
@@ -250,6 +344,7 @@ def save_metadata(
                 sum(sharpness_vals) / len(sharpness_vals), 2
             ) if sharpness_vals else None,
         },
+        "blur_filter": blur_filter_report or {"skipped": True, "reason": "not_requested"},
         "frames": frame_records,
     }
 
@@ -314,6 +409,14 @@ def main():
         "--config", type=str, default="config.yaml",
         help="Path to config.yaml (default: config.yaml)"
     )
+    parser.add_argument(
+        "--filter_blur_bottom_pct", type=float, default=0.0,
+        help=(
+            "Delete the bottom N%% of frames ranked by Laplacian sharpness before "
+            "saving. Survivors are renumbered sequentially. 0 = no filtering (default). "
+            "Recommended: 20 (matches Spatiality v2 approach). Requires opencv-python."
+        ),
+    )
     args = parser.parse_args()
 
     # Resolve project root (parent of scripts/)
@@ -365,6 +468,8 @@ def main():
                 f"~{int(video_info['duration_sec'] * fps)} expected frames")
     logger.info(f"Output:     {output_dir}")
     logger.info(f"Quality:    {quality}")
+    if args.filter_blur_bottom_pct > 0:
+        logger.info(f"Blur filter: will drop bottom {args.filter_blur_bottom_pct}% by Laplacian sharpness")
 
     # Extract frames
     t0 = time.time()
@@ -377,22 +482,35 @@ def main():
 
     logger.info(f"Extraction complete: {num_frames} frames in {elapsed:.1f}s")
 
-    # Analyse frames
+    # Analyse frames (sharpness scoring)
     logger.info("Analysing frame quality...")
     frame_records = analyse_extracted_frames(output_dir, logger)
 
-    # Save metadata
-    save_metadata(video_info, frame_records, fps, elapsed, output_dir, logger)
+    # Apply blur filter if requested
+    blur_report = None
+    if args.filter_blur_bottom_pct > 0:
+        logger.info(f"Applying blur filter (drop bottom {args.filter_blur_bottom_pct}%)...")
+        frame_records, blur_report = filter_blurry_frames(
+            output_dir, frame_records, args.filter_blur_bottom_pct, logger
+        )
+
+    # Save metadata (reflects post-filter state)
+    save_metadata(video_info, frame_records, fps, elapsed, output_dir, logger, blur_report)
 
     # Print summary
     sharpness_vals = [r["sharpness"] for r in frame_records if r["sharpness"] >= 0]
     total_size_mb = sum(r["file_size_bytes"] for r in frame_records) / (1024 * 1024)
+    final_count = len(frame_records)
 
     logger.info("")
     logger.info("=" * 62)
     logger.info("  EXTRACTION COMPLETE")
     logger.info("=" * 62)
     logger.info(f"  Frames extracted:   {num_frames}")
+    if blur_report and not blur_report.get("skipped"):
+        logger.info(f"  Blurry dropped:     {blur_report['frames_dropped']} "
+                    f"(sharpness < {blur_report['sharpness_threshold']})")
+        logger.info(f"  Sharp frames kept:  {blur_report['frames_kept']}")
     logger.info(f"  Output directory:   {output_dir}")
     logger.info(f"  Total size:         {total_size_mb:.1f} MB")
     if sharpness_vals:
@@ -403,16 +521,17 @@ def main():
     logger.info(f"  Time elapsed:       {elapsed:.1f}s")
     logger.info("=" * 62)
 
-    # Validate frame count range (40–80 is ideal for VGGT)
-    if 40 <= num_frames <= 90:
-        logger.info(f"\n  ✅ {num_frames} frames — good range for VGGT (40–90)")
-        logger.info("  ✅ Ready for Session 2 (VGGT Reconstruction)")
-    elif num_frames < 40:
-        logger.warning(f"\n  ⚠️  Only {num_frames} frames — consider increasing "
-                       f"--fps (currently {fps})")
+    # Validate final frame count (300–1000 is ideal for VGGT with 5fps input)
+    if 300 <= final_count <= 1000:
+        logger.info(f"\n  ✅ {final_count} frames — good range for VGGT")
+        logger.info("  ✅ Ready for VGGT reconstruction")
+    elif final_count < 100:
+        logger.warning(f"\n  ⚠️  Only {final_count} frames — consider increasing --fps")
+    elif final_count < 300:
+        logger.warning(f"\n  ⚠️  {final_count} frames — workable but more is better; "
+                       f"consider increasing --fps")
     else:
-        logger.warning(f"\n  ⚠️  {num_frames} frames — consider decreasing "
-                       f"--fps (currently {fps})")
+        logger.info(f"\n  ✅ {final_count} frames extracted")
 
 
 if __name__ == "__main__":
