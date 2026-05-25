@@ -419,6 +419,11 @@ const COLORS = {
 const HOME_POS  = [ 0.261, -0.447,  0.114];
 const HOME_LOOK = [ 0.261, -0.412, -0.262];
 
+// Point cloud home — MASt3R-SLAM uses Y-down (camera convention).
+// PC_HOME_LOOK is the room centre; PC_HOME_POS is eye-level 3 m in front.
+const PC_HOME_LOOK = [ 0.261, -0.412, -0.262];
+const PC_HOME_POS  = [ 0.261, -0.447,  0.114];
+
 // ── State ──────────────────────────────────────────────────────────────────────
 let viewer   = null;
 let objects  = {};
@@ -454,11 +459,6 @@ async function initPointCloud() {
   const pcUrl = await bestPcUrl();
   if (!pcUrl) { label.textContent = 'No point cloud found'; return; }
 
-  // Capture splat camera before hiding it
-  const startPos  = viewer?.camera ? viewer.camera.position.clone() : new THREE.Vector3(...HOME_POS);
-  const startLook = viewer?.controls?.target ? viewer.controls.target.clone()
-                                              : new THREE.Vector3(...HOME_LOOK);
-
   // Create a fresh canvas — avoids CSS conflicts with GS canvas
   const canvas = document.createElement('canvas');
   canvas.style.cssText = 'position:fixed;inset:0;z-index:0;';
@@ -469,15 +469,15 @@ async function initPointCloud() {
   pcScene.background = new THREE.Color(0x08080f);
 
   pcCamera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.001, 200);
-  pcCamera.position.copy(startPos);
-  pcCamera.up.set(0,1,0);
+  pcCamera.position.set(...PC_HOME_POS);
+  pcCamera.up.set(0, -1, 0);  // MASt3R-SLAM point cloud is Y-down
 
   pcRenderer = new THREE.WebGLRenderer({ canvas, antialias:false });
   pcRenderer.setSize(innerWidth, innerHeight);
   pcRenderer.setPixelRatio(devicePixelRatio);
 
   pcControls = new OrbitControls(pcCamera, canvas);
-  pcControls.target.copy(startLook);
+  pcControls.target.set(...PC_HOME_LOOK);
   pcControls.enableDamping = true;
   pcControls.dampingFactor = 0.06;
   pcControls.screenSpacePanning = false;

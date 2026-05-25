@@ -1,3 +1,4 @@
+
 #!/bin/bash
 # =============================================================================
 # RoboScene+ — MASt3R-SLAM v2 + Splat v6 Pipeline (UCL bluestreak)
@@ -116,14 +117,23 @@ if [ ! -d "$MAST3R_DIR" ]; then
     git clone --recursive https://github.com/rmurai0610/MASt3R-SLAM.git
     cd "$MAST3R_DIR"
     echo "  Installing Python dependencies..."
-    pip install -e . --no-build-isolation -q
+    pip install --no-cache-dir --no-build-isolation -e . || true
+    # Also install submodules if they exist
+    [ -d "thirdparty/mast3r" ] && pip install --no-cache-dir --no-build-isolation -e thirdparty/mast3r || true
+    [ -d "thirdparty/mast3r/dust3r" ] && pip install --no-cache-dir --no-build-isolation -e thirdparty/mast3r/dust3r || true
     echo "  ✓ MASt3R-SLAM installed"
 else
     echo "  Found at $MAST3R_DIR"
     # Ensure it's installed in venv
     cd "$MAST3R_DIR"
-    pip install -e . --no-build-isolation -q 2>/dev/null || true
+    pip install --no-cache-dir --no-build-isolation -e . 2>/dev/null || true
+    [ -d "thirdparty/mast3r" ] && pip install --no-cache-dir --no-build-isolation -e thirdparty/mast3r 2>/dev/null || true
+    [ -d "thirdparty/mast3r/dust3r" ] && pip install --no-cache-dir --no-build-isolation -e thirdparty/mast3r/dust3r 2>/dev/null || true
 fi
+
+# Add MASt3R-SLAM + submodules to PYTHONPATH
+# Note: directory is "thirdparty" (no underscore)
+export PYTHONPATH="$MAST3R_DIR:$MAST3R_DIR/thirdparty/mast3r:$MAST3R_DIR/thirdparty/mast3r/dust3r:$PYTHONPATH"
 
 # Download checkpoints if missing
 CKPT_DIR="$MAST3R_DIR/checkpoints"
@@ -165,65 +175,31 @@ echo ""
 
 mkdir -p "$SLAM_WORKSPACE"
 
-# MASt3R-SLAM uses Python API or demo.py. Use Python API for programmatic control.
-python3 - <<'PYEOF'
-import sys, os, shutil, json
-import numpy as np
-from pathlib import Path
+# Patch RGBFiles to support .jpg (it only globs .png by default)
+sed -i 's/self.rgb_files = natsorted(list((self.dataset_path).glob("\*.png")))/self.rgb_files = natsorted(list((self.dataset_path).glob("*.png")) + list((self.dataset_path).glob("*.jpg")))/' \
+    /scratch0/jrameshs/MASt3R-SLAM/mast3r_slam/dataloader.py
+echo "  Patched RGBFiles to support .jpg"
 
-sys.path.insert(0, '/scratch0/jrameshs/MASt3R-SLAM')
+# Run MASt3R-SLAM using main.py (the actual entry point)
+# --dataset: path to frames dir (detected as RGBFiles since no known dataset prefix)
+# --config: base config (no calibration needed — MASt3R estimates intrinsics)
+# --no-viz: headless mode
+# --save-as: output subdirectory name in checkpoints/
+cd /scratch0/jrameshs/MASt3R-SLAM
+python3 main.py \
+    --dataset "$PROJECT_DIR/$FRAMES_DIR" \
+    --config config/base.yaml \
+    --no-viz \
+    --save-as mast3r_slam_v2
+cd "$PROJECT_DIR"
 
-project_dir   = '/scratch0/jrameshs/roboscene-plus'
-frames_dir    = f'{project_dir}/data/frames_v3'
-workspace_dir = '/scratch0/jrameshs/mast3r_slam_v2_workspace'
-output_dir    = f'{project_dir}/outputs/mast3r_out_v2'
-colmap_dir    = f'{project_dir}/data/mast3r_out_v2'
+echo "  ✓ MASt3R-SLAM complete"
 
-os.makedirs(workspace_dir, exist_ok=True)
-os.makedirs(output_dir, exist_ok=True)
-os.makedirs(f'{colmap_dir}/sparse/0', exist_ok=True)
-
-frames = sorted(Path(frames_dir).glob('frame_*.jpg'))
-print(f'  Found {len(frames)} frames')
-
-# Try to import and run MASt3R-SLAM
-try:
-    from mast3r_slam.dataloader import ImageFolderDataset
-    from mast3r_slam.slam import MASt3rSLAM
-
-    dataset = ImageFolderDataset(frames_dir)
-    slam = MASt3rSLAM(
-        checkpoint='/scratch0/jrameshs/MASt3R-SLAM/checkpoints/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth',
-        workspace=workspace_dir,
-        device='cuda'
-    )
-    slam.run(dataset)
-    slam.save(workspace_dir)
-    print('  ✓ MASt3R-SLAM complete (Python API)')
-
-except ImportError as e:
-    print(f'  Python API not available ({e}) — using demo.py subprocess')
-    import subprocess
-    demo_script = '/scratch0/jrameshs/MASt3R-SLAM/demo.py'
-    result = subprocess.run([
-        'python3', demo_script,
-        '--dataset', 'ImageFolder', frames_dir,
-        '--output_dir', workspace_dir,
-        '--device', 'cuda',
-        '--silent'
-    ], cwd='/scratch0/jrameshs/MASt3R-SLAM', check=True)
-    print('  ✓ MASt3R-SLAM complete (demo.py)')
-
-except Exception as e:
-    print(f'  ERROR running MASt3R-SLAM: {e}')
-    raise
-
-print(f'  Workspace contents:')
-for p in sorted(Path(workspace_dir).iterdir()):
-    size = p.stat().st_size if p.is_file() else sum(f.stat().st_size for f in p.rglob('*') if f.is_file())
-    print(f'    {p.name:<40} {size/1e6:.1f} MB')
-
-PYEOF
+# Find outputs
+SLAM_OUTPUT="/scratch0/jrameshs/MASt3R-SLAM/checkpoints/mast3r_slam_v2"
+echo "  SLAM output directory: $SLAM_OUTPUT"
+ls -la "$SLAM_OUTPUT" 2>/dev/null || echo "  (checking alternative locations...)"
+ls -la /scratch0/jrameshs/MASt3R-SLAM/checkpoints/ 2>/dev/null
 
 echo ""
 echo "  MASt3R-SLAM finished: $(date)"
@@ -417,7 +393,7 @@ else
         --colmap_dir "$COLMAP_INPUT" \
         --output_dir "$OUT_DIR" \
         --frames_dir "$IMAGES_INPUT" \
-        --iterations 30000 \
+        --iterations 60000 \
         --opacity_reg 0.0 \
         --scale_reg 0.0 \
         --prune_opa 0.002
