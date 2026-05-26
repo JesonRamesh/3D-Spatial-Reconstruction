@@ -487,6 +487,7 @@ async function initPointCloud() {
     (function loop(){
       if (viewMode !== 'pointcloud') return;
       tickPcMovement();
+      updateLabelSizes();
       pcControls.update();
       pcRenderer.render(pcScene, pcCamera);
       requestAnimationFrame(loop);
@@ -651,6 +652,18 @@ function makeLabelSprite(text, color) {
   // Keep aspect ratio; world height ~0.06 m
   sprite.scale.set(W / H * 0.06, 0.06, 1);
   return sprite;
+}
+
+// Keep all label sprites at a constant angular size (~5 % of screen height).
+function updateLabelSizes() {
+  if (!pcCamera || pcLabelSprites.length === 0) return;
+  const tanHalfFov = Math.tan(pcCamera.fov * 0.5 * Math.PI / 180);
+  const ASPECT = 256 / 56;
+  pcLabelSprites.forEach(s => {
+    const dist = Math.max(0.3, pcCamera.position.distanceTo(s.position));
+    const h    = Math.min(0.18, 0.055 * dist * tanHalfFov);
+    s.scale.set(ASPECT * h, h, 1);
+  });
 }
 
 async function loadPcLabels() {
