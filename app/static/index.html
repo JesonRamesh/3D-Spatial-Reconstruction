@@ -389,14 +389,14 @@ import * as GS from
 const HF_BASE = 'https://huggingface.co/datasets/jeeeeeeeson/roboscene-data/resolve/main';
 const IS_LOCAL = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
 const SPLAT_CANDIDATES = IS_LOCAL ? [
-  // local dev — semantic first
-  '/outputs/splat_v4/scene_semantic_v3.splat',
+  // local dev — appearance-only (no semantic paint)
   '/outputs/splat_v4/scene_pruned.splat',
   '/outputs/splat_v4/scene_aligned.splat',
+  '/outputs/splat_v4/scene.splat',
 ] : [
   // production (HF Space)
-  HF_BASE + '/scene_semantic_v3.splat',
   HF_BASE + '/scene_pruned.splat',
+  HF_BASE + '/scene_aligned.splat',
 ];
 const OBJECTS_URL          = HF_BASE + '/objects_3d_yup.json';
 const OBJECTS_URL_FALLBACK = '/outputs/objects_3d_yup.json';
@@ -419,10 +419,35 @@ const COLORS = {
 const HOME_POS  = [ 0.261, -0.447,  0.114];
 const HOME_LOOK = [ 0.261, -0.412, -0.262];
 
-// Point cloud home — MASt3R-SLAM uses Y-down (camera convention).
-// PC_HOME_LOOK is the room centre; PC_HOME_POS is eye-level 3 m in front.
-const PC_HOME_LOOK = [ 0.261, -0.412, -0.262];
-const PC_HOME_POS  = [ 0.261, -0.447,  0.114];
+// Point cloud home — user-confirmed correspondence to the splat HOME view.
+const PC_HOME_POS  = [-0.359,  0.276,  0.681];
+const PC_HOME_LOOK = [-0.620,  0.250,  0.930];
+
+// ── Splat ↔ Point-cloud coordinate transform ────────────────────────────────
+// Derived from the user-provided correspondence:
+//   splat HOME_POS=[0.261,-0.447,0.114] ↔ PC_HOME_POS=[-0.359,0.276,0.681]
+//   splat HOME_LOOK=[0.261,-0.412,-0.262] ↔ PC_HOME_LOOK=[-0.620,0.250,0.930]
+// Forward (splat→PC):  p_pc = R @ p_s + T
+//   X_pc =  0.720*x + 0.694*z − 0.626
+//   Y_pc = −y − 0.171
+//   Z_pc =  0.750*x − 0.662*z + 0.560
+function splatToPc(p) {
+  const x = p[0], y = p[1], z = p[2];
+  return [
+     0.720 * x + 0.694 * z - 0.626,
+    -y - 0.171,
+     0.750 * x - 0.662 * z + 0.560,
+  ];
+}
+// Inverse (PC→splat):  R^T @ (p_pc − T)
+function pcToSplat(p) {
+  const dx = p[0] + 0.626, dy = p[1] + 0.171, dz = p[2] - 0.560;
+  return [
+    0.720 * dx + 0.750 * dz,
+    -dy,
+    0.694 * dx - 0.662 * dz,
+  ];
+}
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let viewer   = null;
@@ -438,6 +463,9 @@ let anim = null;
 let viewMode   = 'splat';
 let pcLoaded   = false;
 let pcRenderer = null, pcScene = null, pcCamera = null, pcControls = null, pcDomEl = null;
+// Pending start position injected by toggleViewMode before initPointCloud runs
+let pcStartPos  = null;
+let pcStartLook = null;
 
 async function bestPcUrl() {
   for (const url of PC_CANDIDATES) {
@@ -450,9 +478,19 @@ async function initPointCloud() {
   const label = document.getElementById('load-indicator');
 
   if (pcLoaded) {
-    // Already loaded — make canvas visible again and restart the render loop
     if (pcDomEl) pcDomEl.style.display = 'block';
-    (function loop(){ if (viewMode==='pointcloud'){ pcControls.update(); pcRenderer.render(pcScene,pcCamera); requestAnimationFrame(loop); } })();
+    // If we have a target position (from the splat view), fly there
+    if (pcStartPos) {
+      flyTo(pcStartPos, pcStartLook, 1200);
+      pcStartPos = pcStartLook = null;
+    }
+    (function loop(){
+      if (viewMode !== 'pointcloud') return;
+      tickPcMovement();
+      pcControls.update();
+      pcRenderer.render(pcScene, pcCamera);
+      requestAnimationFrame(loop);
+    })();
     return;
   }
 
@@ -468,8 +506,12 @@ async function initPointCloud() {
   pcScene = new THREE.Scene();
   pcScene.background = new THREE.Color(0x08080f);
 
+  const initPos  = pcStartPos  ?? PC_HOME_POS;
+  const initLook = pcStartLook ?? PC_HOME_LOOK;
+  pcStartPos = pcStartLook = null;
+
   pcCamera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.001, 200);
-  pcCamera.position.set(...PC_HOME_POS);
+  pcCamera.position.set(...initPos);
   pcCamera.up.set(0, -1, 0);  // MASt3R-SLAM point cloud is Y-down
 
   pcRenderer = new THREE.WebGLRenderer({ canvas, antialias:false });
@@ -477,10 +519,11 @@ async function initPointCloud() {
   pcRenderer.setPixelRatio(devicePixelRatio);
 
   pcControls = new OrbitControls(pcCamera, canvas);
-  pcControls.target.set(...PC_HOME_LOOK);
+  pcControls.target.set(...initLook);
   pcControls.enableDamping = true;
-  pcControls.dampingFactor = 0.06;
-  pcControls.screenSpacePanning = false;
+  pcControls.dampingFactor = 0.12;
+  pcControls.zoomSpeed = 8.0;
+  pcControls.screenSpacePanning = true;   // free pan in any direction
   pcControls.update();
 
   label.textContent = 'Loading point cloud…';
@@ -510,10 +553,141 @@ async function initPointCloud() {
     pcLoaded = true;
     label.textContent = pcUrl.split('/').pop();
 
-    (function loop(){ if (viewMode==='pointcloud'){ pcControls.update(); pcRenderer.render(pcScene,pcCamera); requestAnimationFrame(loop); } })();
+    loadPcLabels();
+    (function loop(){
+      if (viewMode !== 'pointcloud') return;
+      tickPcMovement();
+      pcControls.update();
+      pcRenderer.render(pcScene, pcCamera);
+      requestAnimationFrame(loop);
+    })();
   },
   xhr => { if (xhr.total) label.textContent = `PC ${(xhr.loaded/1e6).toFixed(0)}/${(xhr.total/1e6).toFixed(0)} MB`; },
   err => { console.error(err); label.textContent = 'PC load failed'; });
+}
+
+// ── Point cloud WASD fly movement ─────────────────────────────────────────────
+const pcKeys = {};
+document.addEventListener('keydown', e => {
+  if (viewMode === 'pointcloud') {
+    pcKeys[e.code] = true;
+    // Prevent arrow keys from scrolling the sidebar
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+  }
+});
+document.addEventListener('keyup', e => { delete pcKeys[e.code]; });
+
+function tickPcMovement() {
+  if (!pcCamera || !pcControls) return;
+  const moving = ['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE',
+                   'ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].some(k => pcKeys[k]);
+  if (!moving) return;
+
+  const fast  = pcKeys['ShiftLeft'] || pcKeys['ShiftRight'];
+  const speed = fast ? 0.08 : 0.025;
+
+  // Camera right = local X axis from camera matrix (works regardless of up vector)
+  const right = new THREE.Vector3().setFromMatrixColumn(pcCamera.matrix, 0);
+  // Camera forward = view direction
+  const fwd = new THREE.Vector3();
+  pcCamera.getWorldDirection(fwd);
+  // Screen-space up = visual up direction (negative Y in Y-down world)
+  const up = new THREE.Vector3(0, -1, 0);
+
+  const delta = new THREE.Vector3();
+  if (pcKeys['KeyW'] || pcKeys['ArrowUp'])    delta.addScaledVector(fwd,   speed);
+  if (pcKeys['KeyS'] || pcKeys['ArrowDown'])  delta.addScaledVector(fwd,  -speed);
+  if (pcKeys['KeyA'] || pcKeys['ArrowLeft'])  delta.addScaledVector(right, -speed);
+  if (pcKeys['KeyD'] || pcKeys['ArrowRight']) delta.addScaledVector(right,  speed);
+  if (pcKeys['KeyQ']) delta.addScaledVector(up,  speed);   // Q = fly up
+  if (pcKeys['KeyE']) delta.addScaledVector(up, -speed);   // E = fly down
+
+  pcCamera.position.add(delta);
+  pcControls.target.add(delta);   // move orbit target with camera → no snap-back
+}
+
+// ── 3-D object label sprites ───────────────────────────────────────────────────
+let pcLabelSprites = [];
+
+function makeLabelSprite(text, color) {
+  const W = 256, H = 56;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // Background pill
+  const r = H / 2;
+  ctx.beginPath();
+  ctx.moveTo(r, 0); ctx.lineTo(W - r, 0);
+  ctx.quadraticCurveTo(W, 0, W, r);
+  ctx.lineTo(W, H - r);
+  ctx.quadraticCurveTo(W, H, W - r, H);
+  ctx.lineTo(r, H);
+  ctx.quadraticCurveTo(0, H, 0, H - r);
+  ctx.lineTo(0, r);
+  ctx.quadraticCurveTo(0, 0, r, 0);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(8,8,15,0.82)';
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  // Color dot
+  ctx.beginPath();
+  ctx.arc(22, H / 2, 7, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  // Label text
+  ctx.fillStyle = '#d8e8f8';
+  ctx.font = 'bold 20px "Courier New", monospace';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text.toUpperCase(), 36, H / 2);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  // Keep aspect ratio; world height ~0.06 m
+  sprite.scale.set(W / H * 0.06, 0.06, 1);
+  return sprite;
+}
+
+async function loadPcLabels() {
+  const centroidsUrl = IS_LOCAL
+    ? '/outputs/semantic_centroids.json'
+    : HF_BASE + '/semantic_centroids.json';
+  let data;
+  try {
+    const r = await fetch(centroidsUrl);
+    if (!r.ok) return;
+    data = await r.json();
+  } catch(_) { return; }
+
+  // Remove any previously added sprites
+  pcLabelSprites.forEach(s => pcScene.remove(s));
+  pcLabelSprites = [];
+
+  for (const [lbl, info] of Object.entries(data)) {
+    const [x, y, z] = info.centroid;
+    const color = info.color || COLORS[lbl] || '#00d4ff';
+    const sprite = makeLabelSprite(lbl, color);
+    // Offset slightly upward (Y-down world: subtract from Y to go "up")
+    sprite.position.set(x, y - 0.12, z);
+    pcScene.add(sprite);
+    pcLabelSprites.push(sprite);
+  }
+  console.log(`[labels] ${pcLabelSprites.length} object labels added`);
+}
+
+// Fly to a position given in splat-space coordinates.
+// Automatically transforms to PC space when in point-cloud mode.
+function flyToSplatSpace(sPos, sLook, dur = 1800, onDone = null) {
+  if (viewMode === 'pointcloud') {
+    flyTo(splatToPc(sPos), splatToPc(sLook), dur, onDone);
+  } else {
+    flyTo(sPos, sLook, dur, onDone);
+  }
 }
 
 function toggleViewMode() {
@@ -521,24 +695,40 @@ function toggleViewMode() {
   const gsCanvas = viewer?.renderer?.domElement;
 
   if (viewMode === 'splat') {
+    // Convert current splat camera position to PC world space
+    const curPos  = cam()?.position.toArray()  ?? HOME_POS;
+    const curLook = controls()?.target.toArray() ?? HOME_LOOK;
+    pcStartPos  = splatToPc(curPos);
+    pcStartLook = splatToPc(curLook);
+
     viewMode = 'pointcloud';
     viewer?.stop?.();                          // pause GS render loop (power drain fix)
     if (gsCanvas) gsCanvas.style.display = 'none';
     btn.textContent = '⬡ Splat View';
     btn.style.color = 'var(--accent2)';
-    initPointCloud(); // creates its own canvas + appends to body
+    initPointCloud();
   } else {
-    // Sync point cloud camera back to splat before hiding
-    if (pcCamera && viewer?.camera) {
-      viewer.camera.position.copy(pcCamera.position);
-      if (viewer.controls?.target && pcControls) viewer.controls.target.copy(pcControls.target);
+    // Convert current PC camera position back to splat world space
+    if (pcCamera) {
+      const splatPos  = pcToSplat(pcCamera.position.toArray());
+      const splatLook = pcToSplat(pcControls.target.toArray());
+      viewMode = 'splat';
+      for (const k in pcKeys) delete pcKeys[k];
+      if (pcDomEl) pcDomEl.style.display = 'none';
+      if (gsCanvas) gsCanvas.style.display = 'block';
+      viewer?.start?.();
+      btn.textContent = '⬡ Point Cloud';
+      btn.style.color = '';
+      flyTo(splatPos, splatLook, 1200);
+    } else {
+      viewMode = 'splat';
+      for (const k in pcKeys) delete pcKeys[k];
+      if (pcDomEl) pcDomEl.style.display = 'none';
+      if (gsCanvas) gsCanvas.style.display = 'block';
+      viewer?.start?.();
+      btn.textContent = '⬡ Point Cloud';
+      btn.style.color = '';
     }
-    viewMode = 'splat';
-    if (pcDomEl) pcDomEl.style.display = 'none';
-    if (gsCanvas) gsCanvas.style.display = 'block';
-    viewer?.start?.();                         // resume GS render loop
-    btn.textContent = '⬡ Point Cloud';
-    btn.style.color = '';
   }
 }
 window.toggleViewMode = toggleViewMode;
@@ -613,7 +803,7 @@ function tickAnim(now) {
 function resetCam() {
   stopTour();
   selectObj(null);
-  flyTo(HOME_POS, HOME_LOOK, 1400);
+  flyToSplatSpace(HOME_POS, HOME_LOOK, 1400);
 }
 window.resetCam = resetCam;
 
@@ -655,7 +845,7 @@ function selectObj(name) {
 
   // Always fly to the tour stop if one exists — independent of the JSON metadata
   const vp = viewPosFor(name);
-  if (vp) flyTo(vp.pos, vp.look, 1600);
+  if (vp) flyToSplatSpace(vp.pos, vp.look, 1600);
 
   // Show info card if metadata is available; otherwise show minimal card
   const obj = objects[name];
@@ -731,7 +921,7 @@ function nextTourStep() {
   if (objects[name]) showInfo(name, objects[name]);
   // Fly camera to the object-specific position
   const vp = viewPosFor(name);
-  if (vp) flyTo(vp.pos, vp.look, 1600);
+  if (vp) flyToSplatSpace(vp.pos, vp.look, 1600);
   // Update tour dots
   document.querySelectorAll('.tdot').forEach((d, i) =>
     d.classList.toggle('on', i === tourIdx));
@@ -917,12 +1107,20 @@ async function main() {
     if (ctrl.maxPolarAngle !== undefined) ctrl.maxPolarAngle = Math.PI;
     viewer.controls.movementSpeed = 6.0;
     viewer.controls.keyboardMovementSpeed = 6.0;
-    if (ctrl.zoomSpeed !== undefined) ctrl.zoomSpeed = 3.0;
+    if (ctrl.zoomSpeed !== undefined) ctrl.zoomSpeed = 12.0;
+    if (ctrl.enableZoom !== undefined) ctrl.enableZoom = true;
     if (ctrl.update) ctrl.update();
   }
   fixControls();
   setTimeout(fixControls, 500);
   setTimeout(fixControls, 1500);
+  // Keep re-applying until controls are confirmed stable (GS viewer may
+  // reinitialise controls after the splat scene finishes loading)
+  let fixAttempts = 0;
+  const fixInterval = setInterval(() => {
+    fixControls();
+    if (++fixAttempts >= 10) clearInterval(fixInterval);
+  }, 800);
 
   finishLoad();
 
@@ -935,19 +1133,27 @@ async function main() {
 
   function fmt(v) { return v.toFixed(3); }
   function updateCamCoords() {
-    if (!cam()) return;
-    const p  = cam().position;
-    const ctrl = controls();
-    const lx = ctrl ? ctrl.target.x : 0;
-    const ly = ctrl ? ctrl.target.y : 0;
-    const lz = ctrl ? ctrl.target.z : 0;
-    const u  = cam().up;
+    let p, lx, ly, lz, ux, uy, uz;
+    if (viewMode === 'pointcloud' && pcCamera) {
+      p  = pcCamera.position;
+      const t = pcControls?.target;
+      lx = t ? t.x : 0; ly = t ? t.y : 0; lz = t ? t.z : 0;
+      ux = pcCamera.up.x; uy = pcCamera.up.y; uz = pcCamera.up.z;
+    } else {
+      if (!cam()) return;
+      p = cam().position;
+      const ctrl = controls();
+      lx = ctrl ? ctrl.target.x : 0;
+      ly = ctrl ? ctrl.target.y : 0;
+      lz = ctrl ? ctrl.target.z : 0;
+      ux = cam().up.x; uy = cam().up.y; uz = cam().up.z;
+    }
     document.getElementById('cc-pos').textContent =
       `[${fmt(p.x)}, ${fmt(p.y)}, ${fmt(p.z)}]`;
     document.getElementById('cc-look').textContent =
       `[${fmt(lx)}, ${fmt(ly)}, ${fmt(lz)}]`;
     document.getElementById('cc-up').textContent =
-      `[${fmt(u.x)}, ${fmt(u.y)}, ${fmt(u.z)}]`;
+      `[${fmt(ux)}, ${fmt(uy)}, ${fmt(uz)}]`;
   }
 }
 

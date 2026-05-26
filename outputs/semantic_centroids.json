@@ -1,0 +1,37 @@
+{
+  "bed": {
+    "centroid": [-0.315, 0.2783, 1.6619],
+    "point_count": 2863312,
+    "color": "#FFB6C1"
+  },
+  "desk": {
+    "centroid": [0.3502, 0.4459, 0.5606],
+    "point_count": 1394296,
+    "color": "#20B2AA"
+  },
+  "chair": {
+    "centroid": [0.3883, 0.7979, 0.8838],
+    "point_count": 1557953,
+    "color": "#4682B4"
+  },
+  "laptop": {
+    "centroid": [0.8785, 0.1259, 0.8075],
+    "point_count": 466607,
+    "color": "#6495ED"
+  },
+  "fan": {
+    "centroid": [0.7303, 0.2011, 1.149],
+    "point_count": 119071,
+    "color": "#FF6347"
+  },
+  "lamp": {
+    "centroid": [-0.7078, -1.9472, 1.5023],
+    "point_count": 169673,
+    "color": "#FFD700"
+  },
+  "shelf": {
+    "centroid": [-2.1554, 0.1167, 0.9671],
+    "point_count": 1547513,
+    "color": "#CD853F"
+  }
+}
