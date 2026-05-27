@@ -120,8 +120,8 @@
       0%,100% { opacity:.12; } 50% { opacity:.28; }
     }
 
-    .logo { color:var(--text); font-size:12px; font-weight:400; letter-spacing:.22em;
-      text-transform:uppercase; opacity:.6; }
+    .logo { color:var(--text); font-size:12px; font-weight:400; letter-spacing:.18em;
+      opacity:.75; }
     .spacer { flex:1; }
     .tbtn {
       background:transparent; color:var(--dim);
@@ -353,6 +353,7 @@
 
 <!-- Top bar -->
 <div id="topbar">
+  <span class="logo">Jeson's Bedroom</span>
   <div class="spacer"></div>
   <span id="load-indicator"></span>
   <!--<button class="tbtn" id="view-toggle" onclick="toggleViewMode()">⬡ Splat View</button>-->
@@ -360,14 +361,11 @@
   <button class="tbtn" id="reset-btn" onclick="resetCam()">⌀ Reset</button>
 </div>
 
-<!-- Always-visible scene title top-left -->
-<div id="scene-title">Jeson's Bedroom</div>
-
 <!-- Sidebar collapse toggle -->
-<button id="sidebar-toggle" onclick="toggleSidebar()">‹</button>
+<button id="sidebar-toggle" class="collapsed" onclick="toggleSidebar()">›</button>
 
 <!-- Sidebar -->
-<div id="sidebar">
+<div id="sidebar" class="collapsed">
   <div class="sec-head">Detected Objects</div>
   <div style="font-size:10px;color:#5580a0;padding:4px 12px 8px;letter-spacing:.04em">
     Identified via SAM2 + GroundingDINO
@@ -632,8 +630,8 @@ async function initPointCloud() {
     bgGeo.setAttribute('position', new THREE.BufferAttribute(bgPos, 3));
     bgGeo.userData.vel = bgVel;
     const bgMat = new THREE.PointsMaterial({
-      size: 0.055, sizeAttenuation: true, map: starTex,
-      transparent: true, opacity: 0.75, depthWrite: false, blending: THREE.AdditiveBlending,
+      size: 0.038, sizeAttenuation: true, map: starTex,
+      transparent: true, opacity: 0.42, depthWrite: false, blending: THREE.AdditiveBlending,
     });
     const bgStars = new THREE.Points(bgGeo, bgMat);
     bgStars.name = 'bgStars';
@@ -653,8 +651,8 @@ async function initPointCloud() {
     fgGeo.setAttribute('position', new THREE.BufferAttribute(fgPos, 3));
     fgGeo.userData.vel = fgVel;
     const fgMat = new THREE.PointsMaterial({
-      size: 0.14, sizeAttenuation: true, map: starTex,
-      transparent: true, opacity: 0.90, depthWrite: false, blending: THREE.AdditiveBlending,
+      size: 0.10, sizeAttenuation: true, map: starTex,
+      transparent: true, opacity: 0.60, depthWrite: false, blending: THREE.AdditiveBlending,
     });
     const fgStars = new THREE.Points(fgGeo, fgMat);
     fgStars.name = 'fgStars';
@@ -948,7 +946,7 @@ function resetCam() {
 window.resetCam = resetCam;
 
 // ── Sidebar collapse toggle ─────────────────────────────────────────────────────
-let sidebarOpen = true;
+let sidebarOpen = false;
 function toggleSidebar() {
   sidebarOpen = !sidebarOpen;
   document.getElementById('sidebar').classList.toggle('collapsed', !sidebarOpen);
