@@ -1,124 +1,219 @@
-# RoboScene+
+<p align="center">
+  <img src="app/assets/banner.png" alt="RoboScene+" width="100%"/>
+</p>
 
-**Phone video → photorealistic 3D reconstruction → semantic scene graph → robot-queryable spatial memory**
+<h1 align="center">RoboScene+</h1>
 
-[![Live Demo](https://img.shields.io/badge/🤖_Live_Demo-HuggingFace-yellow)](https://huggingface.co/spaces/jeeeeeeeson/roboscene-plus)
-[![Python 3.11](https://img.shields.io/badge/Python-3.11-blue)](https://python.org)
-[![nerfstudio](https://img.shields.io/badge/splatting-nerfstudio-purple)](https://docs.nerf.studio)
-[![CVPR 2025](https://img.shields.io/badge/reconstruction-VGGT_CVPR_2025-green)](https://github.com/facebookresearch/vggt)
+<p align="center">
+  <strong>Phone video → dense 3D reconstruction → semantic scene graph → robot-queryable spatial memory</strong>
+</p>
+
+<p align="center">
+  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.11-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.11"/></a>
+  <a href="https://github.com/facebookresearch/MASt3R"><img src="https://img.shields.io/badge/MASt3R--SLAM-CVPR_2025-8b5cf6?style=flat-square" alt="MASt3R-SLAM"/></a>
+  <a href="https://docs.nerf.studio"><img src="https://img.shields.io/badge/Gaussian_Splatting-nerfstudio-10b981?style=flat-square" alt="nerfstudio"/></a>
+  <a href="https://github.com/IDEA-Research/Grounded-SAM-2"><img src="https://img.shields.io/badge/Semantics-Grounded_SAM2-f59e0b?style=flat-square" alt="Grounded SAM2"/></a>
+  <a href="https://anthropic.com"><img src="https://img.shields.io/badge/Queries-Claude_API-ef4444?style=flat-square" alt="Claude API"/></a>
+</p>
+
+<br/>
+
+<p align="center">
+  <img src="app/assets/viewer_screenshot.png" alt="Interactive viewer showing dense 3D point cloud with semantic labels" width="90%"/>
+  <br/>
+  <em>Interactive viewer — dense 14.9M-point cloud, cinematic auto-tour, floating semantic labels, WASD navigation</em>
+</p>
 
 ---
 
-## Live Demo
+## Overview
 
-> **[huggingface.co/spaces/jeeeeeeeson/roboscene-plus](https://huggingface.co/spaces/jeeeeeeeson/roboscene-plus)**
+RoboScene+ converts a 5-minute handheld phone video into a navigable 3D scene that a robot can reason about. The system chains state-of-the-art reconstruction, open-vocabulary segmentation, and a confidence-aware quality model into a single deployable viewer — no GPU needed to run it.
 
-The viewer streams a 50MB splat file — allow 20–40s for the download bar to complete on first load. If the HF Space fails to load, run the viewer locally (see [Quick Start](#quick-start) below — no GPU required, just `python open_viewer.py`).
+The core insight: 3D Gaussian Splatting tells you *what* a scene looks like, but not *how reliable* each region of the reconstruction is. RoboScene+ adds a per-voxel confidence layer that tags every part of the scene as `observed`, `sparse`, or `inferred` — directly addressing the "dead zone" problem in robot spatial memory.
 
-![Viewer screenshot placeholder](app/assets/banner.png)
-
----
-
-## What it does
-
-RoboScene+ takes a short phone video of an indoor room and produces:
-
-1. **Photorealistic 3D Gaussian Splat** — 2.41M Gaussians trained at 60K steps via nerfstudio splatfacto
-2. **Per-Gaussian semantic labels** — Grounded SAM2 + GroundingDINO paints every Gaussian with its object class
-3. **Confidence map** ← *novel contribution* — tags every region as `observed`, `sparse`, or `inferred` based on camera coverage and point density
-4. **Scene graph** — 3D bounding boxes, centroids, and spatial relations (next\_to, on\_top\_of, near\_wall)
-5. **Language query interface** — "Where is the laptop?" → 3D coordinates + confidence score, powered by Claude API
-6. **Interactive web viewer** — pure WebGL, no server, deployable as a static page
+| Input | Output |
+|---|---|
+| `room_video_v2.MOV` (320s, 1920×1080, 60fps) | 14.9M-point dense RGB point cloud |
+| 1282 blur-filtered keyframes | 7 semantically labelled objects with 3D positions |
+| 101 SLAM keyframe poses | Confidence-tagged voxel grid (5 cm resolution) |
+| — | Language-queryable scene graph via Claude API |
 
 ---
 
 ## Pipeline
 
 ```
-room_video_v2.MOV  (641 frames, 1080p)
-  │
-  ├─ VGGT (CVPR 2025)  →  camera_poses.json  (641 dense camera poses)
-  │
-  ├─ COLMAP feature matching + SfM  →  539-frame sparse reconstruction
-  │
-  ├─ nerfstudio splatfacto 60K steps (RTX 4070 Ti)
-  │     └─ outputs/splat_v4/scene_aligned.splat   (2.41M Gaussians, Y-up)
-  │
-  ├─ Grounded SAM2 per-frame masks  →  semantic_class.npy  (per-Gaussian labels)
-  │     └─ outputs/splat_v4/scene_semantic.splat  (semantically tinted)
-  │
-  ├─ Confidence map  →  0.6 × VGGT_point_density + 0.4 × camera_coverage
-  │     └─ outputs/confidence_map.npy
-  │
-  ├─ Scene graph  →  outputs/scene_graph.json
-  │
-  └─ Interactive viewer  →  app/static/index.html  (GaussianSplats3D.js)
+room_video_v2.MOV  (320s · 60fps · 1080p)
+         │
+         ▼  ffmpeg + Laplacian blur filter
+  data/frames_v3/                           1282 sharp frames
+         │
+         ▼  MASt3R-SLAM  (CVPR 2025)
+  outputs/mast3r_out_v2/
+    ├─ dense_pointcloud.ply                 14.9M pts · 225MB · RGB
+    └─ trajectory.txt                       101 SLAM keyframe poses (TUM format)
+         │
+         ├──▶  COLMAP conversion            data/mast3r_out_v2/sparse/0/
+         │       └─▶  nerfstudio splatfacto (60K steps · RTX 4070 Ti)
+         │               └─ outputs/splat_v4/scene_pruned.splat   1.59M Gaussians
+         │
+         ├──▶  web crop + Y-down alignment
+         │       └─ outputs/scene_pointcloud_web.ply              2.5M pts · 38MB
+         │
+         ├──▶  Grounded SAM2 + GroundingDINO  (per-frame masks)
+         │       └─▶  paint_semantic_pointcloud.py
+         │               └─ outputs/semantic_centroids.json       7 object centroids
+         │
+         ├──▶  Confidence map               0.6 × point_density + 0.4 × camera_coverage
+         │       └─ outputs/confidence_map.npy                    90×86×118 voxels
+         │
+         └──▶  Scene graph + Claude API     outputs/scene_graph.json
 ```
 
 ---
 
-## Novel Contribution — Confidence-Aware Scene Analysis
+## Novel Contribution — Confidence-Aware Reconstruction
 
-Standard 3D Gaussian Splatting reconstructs geometry but gives no signal about *how well-observed* each region is. In multi-step robot manipulation tasks, acting on poorly-observed regions causes failures (cited failure rate: <50% success in unstructured environments).
+Standard 3DGS tells you nothing about *how trustworthy* each part of the scene is. In unstructured environments this matters: multi-step robot manipulation tasks fail at under 50% success rates partly because robots act on poorly-observed regions as if they were reliable.
 
-RoboScene+ computes a per-voxel confidence score at 5 cm resolution:
+RoboScene+ computes a per-voxel confidence score at **5 cm resolution**:
 
 ```
 confidence(v) = 0.6 × gaussian_density(v) + 0.4 × camera_coverage(v)
 ```
 
-Every Gaussian and every scene-graph object is tagged:
+Every voxel, every Gaussian, and every scene-graph object gets a provenance tag:
 
-| Tag | Confidence | Meaning |
-|-----|-----------|---------|
-| `observed` | > 0.7 | Well-triangulated, multiple viewpoints |
-| `sparse` | 0.3 – 0.7 | Partially covered, moderate certainty |
-| `inferred` | < 0.3 | Near walls / corners, never directly seen |
+| Tag | Threshold | Meaning for robot planning |
+|---|---|---|
+| `observed` | > 0.70 | Well-triangulated, multiple viewpoints — act with full confidence |
+| `sparse` | 0.30 – 0.70 | Partially covered — plan with caution, consider re-observation |
+| `inferred` | < 0.30 | Wall / corner / occluded — do not act on this region |
 
-This lets a robot planner weight spatial memory by reliability — the same problem addressed by KinetIQ's VLM architecture at Humanoid.
+<p align="center">
+  <img src="outputs/navigability_map.png" alt="Bird's-eye confidence map — red=inferred, amber=sparse, green=observed" width="70%"/>
+  <br/>
+  <em>Bird's-eye confidence map · red = inferred · amber = sparse · green = observed · dots = object centroids</em>
+</p>
 
 ---
 
-## Quick Start
+## Interactive Viewer
 
-### View the scene locally
+The viewer is a single self-contained HTML file (`app/static/index.html`) — no build step, no framework, no backend.
+
+**Features:**
+- Dense RGB point cloud (2.5M points, streamed from server)
+- Floating 3D text labels above each detected object, constant screen-size
+- Cinematic intro fly-in (5.5s) from outside the room to home position
+- Auto-montage — 6 cinematic shots loop when idle for 60s (360° orbit, bed, desk, laptop, shelf, shelf top)
+- WASD + arrow key navigation, scroll to zoom, drag to orbit
+- Guided tour through all 5 labelled objects with animated progress dots
+- Collapsible object sidebar with confidence badges
+- Aurora CSS background + glowing starfield that flows through the scene
+- Depth fog fading distant points into the background
+
+<p align="center">
+  <img src="app/assets/viewer_tour.png" alt="Guided tour UI showing object labels and confidence sidebar" width="90%"/>
+</p>
+
+---
+
+## Quick Start — Local Viewer
+
+No GPU required. The point cloud is served from the local Python file server.
 
 ```bash
+# 1. Clone the repository
 git clone https://github.com/JesonRamesh/3D-Spatial-Reconstruction.git
 cd 3D-Spatial-Reconstruction
+
+# 2. Install Python dependencies (minimal — just a file server)
 pip install -r requirements.txt
+
+# 3. Start the viewer
 python open_viewer.py
-# Open http://localhost:8080/app/static/index.html
 ```
 
-The viewer downloads the splat from the HF Dataset CDN. No local GPU needed.
+Then open **http://localhost:8080/app/static/index.html** in Chrome or Firefox.
 
-### Query the scene graph
+> **Note:** The viewer loads `outputs/scene_pointcloud_web.ply` (38MB) from localhost. The first load takes 5–10s depending on disk speed. WebGL 2.0 required — works in all modern desktop browsers.
+
+### Controls
+
+| Action | Control |
+|---|---|
+| Orbit | Click + drag |
+| Fly forward / back | `W` / `S` or `↑` / `↓` |
+| Strafe left / right | `A` / `D` or `←` / `→` |
+| Fly up / down | `Q` / `E` |
+| Zoom | Scroll wheel |
+| Fast move | Hold `Shift` |
+| Guided tour | `▶ Tour` button or `T` |
+| Reset view | `⌀ Reset` button |
+| Toggle sidebar | `›` arrow on left edge |
+
+---
+
+## Language Queries (Claude API)
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 python scripts/query_scene.py
-# > Where is the laptop?
-# → Laptop at (0.77m, -0.34m, 0.29m) · confidence: 52% (sparse) · 
-#   next_to: fan · frames_seen: 89
 ```
 
-### Run the full pipeline (GPU required)
+```
+> Where is the laptop?
+→ Laptop is at (0.18m, -0.22m, 0.71m) in world space.
+  Confidence: 48% (sparse) — partially observed, visible in 94 frames.
+  Spatial relations: on_top_of desk · next_to fan
+
+> What objects are on the desk?
+→ Laptop (0.18, -0.22, 0.71) and lamp (−0.71, −1.95, 1.50) are
+  positioned above the desk surface. Both tagged sparse — recommend
+  re-observation from 0.3m closer before manipulation.
+```
+
+---
+
+## Running the Full Pipeline
+
+A GPU is required for MASt3R-SLAM and Gaussian Splatting. The pipeline was developed on UCL's bluestreak cluster (NVIDIA RTX 4070 Ti SUPER, 16GB VRAM).
 
 ```bash
 # 1. Extract frames
-python scripts/extract_frames.py --video data/raw/room_video.MOV --fps 2
+python scripts/extract_frames.py \
+  --video data/raw/room_video_v2.MOV \
+  --output data/frames_v3/ \
+  --fps 4 --blur_threshold 120
 
-# 2. Train Gaussian Splat (UCL bluestreak or similar)
-bash ucl_gpu/run_splat_v4.sh
+# 2. Run MASt3R-SLAM  (GPU required)
+python scripts/run_mast3r_slam.py \
+  --frames data/frames_v3/ \
+  --output outputs/mast3r_out_v2/
 
-# 3. Semantic painting
-python scripts/paint_semantic_gaussians.py
+# 3. Build COLMAP sparse from SLAM trajectory
+python scripts/colmap_utils.py \
+  --trajectory outputs/mast3r_out_v2/trajectory.txt \
+  --output data/mast3r_out_v2/sparse/0/
 
-# 4. Confidence map
+# 4. Train Gaussian Splat  (GPU required, ~2h at 60K steps)
+bash ucl_gpu/run_splat_job.sh
+
+# 5. Semantic segmentation  (GPU required)
+python scripts/run_semantic.py \
+  --frames_dir data/frames_v3/ \
+  --output_dir outputs/semantic/ \
+  --device cuda
+
+# 6. Paint semantic labels onto point cloud
+python scripts/paint_semantic_pointcloud.py
+
+# 7. Compute confidence map
 python scripts/compute_confidence.py
 
-# 5. Scene graph
+# 8. Build scene graph
 python scripts/build_scene_graph.py
 ```
 
@@ -126,29 +221,28 @@ python scripts/build_scene_graph.py
 
 ## Tech Stack
 
-| Component | Tool | Why |
-|-----------|------|-----|
-| Pose estimation | VGGT (CVPR 2025 Best Paper) | Single-pass inference, no iterative refinement |
-| Feature matching | COLMAP | Robust SfM for dense frame sets |
-| Gaussian Splatting | nerfstudio splatfacto | Best quality/speed trade-off |
-| Semantic segmentation | Grounded SAM2 | Open-vocabulary, mirrors KinetIQ VLM architecture |
-| 3D lifting | Custom numpy/open3d | Zero extra dependencies |
-| Confidence map | Custom numpy | Cheap, interpretable, no ground truth needed |
-| Query interface | Anthropic Claude API | Structured spatial reasoning over scene graph JSON |
-| Web viewer | GaussianSplats3D.js | Pure WebGL, static deployment |
-| Hosting | Hugging Face Spaces + Dataset | Free, permanent CDN URL, CORS-friendly |
+| Component | Tool | Rationale |
+|---|---|---|
+| Dense reconstruction | MASt3R-SLAM (CVPR 2025) | Globally consistent, 14.9M point cloud from 1282 frames |
+| Gaussian Splatting | nerfstudio splatfacto | Wraps gsplat cleanly; works on Linux CUDA + Apple Silicon |
+| Semantic segmentation | Grounded SAM2 + GroundingDINO | Open-vocabulary; mirrors KinetIQ's VLM perception stack |
+| 3D label placement | Custom PLY painter + scipy | Median centroid per object, quaternion-correct projection |
+| Confidence map | Custom numpy voxel grid | CPU-only, 5 cm resolution, interpretable three-class output |
+| Language queries | Anthropic Claude API (claude-sonnet) | Structured spatial reasoning; mirrors KinetIQ System 2 |
+| Viewer | Three.js + PLYLoader + OrbitControls | Zero build step; single HTML file; pure WebGL |
 
 ---
 
 ## Results
 
 | Metric | Value |
-|--------|-------|
-| Gaussians trained | 2.41M (60K steps) |
-| Gaussians with semantic label | 78% |
-| Confirmed objects | 5 (bed, laptop, fan, chair, shelf) |
-| Scene coverage (high confidence) | 0.4% observed · 34.1% sparse · 65.6% inferred |
-| Viewer load time (CDN) | ~15s on typical broadband |
+|---|---|
+| Point cloud density | 14.9M points (full), 2.5M (web-cropped) |
+| SLAM keyframes | 101 of 1282 input frames |
+| Gaussians trained | 1.59M (60K steps) |
+| Confirmed object labels | 7 (bed, desk, chair, laptop, fan, lamp, shelf) |
+| High-confidence voxels | 0.4% observed · 34.1% sparse · 65.6% inferred |
+| Viewer load time (local) | ~5s on SSD |
 
 ---
 
@@ -156,34 +250,40 @@ python scripts/build_scene_graph.py
 
 ```
 3D-Spatial-Reconstruction/
+│
 ├── app/
-│   └── static/
-│       └── index.html          ← self-contained 3D viewer (WebGL)
+│   ├── static/
+│   │   └── index.html              ← self-contained 3D viewer (Three.js, WebGL)
+│   └── assets/                     ← banner, screenshots
+│
 ├── scripts/
-│   ├── extract_frames.py       ← video → frames
-│   ├── run_vggt.py             ← VGGT pose estimation
-│   ├── colmap_utils.py         ← COLMAP binary reader/writer
-│   ├── train_splat.py          ← nerfstudio splatfacto wrapper
-│   ├── run_semantic.py         ← Grounded SAM2 segmentation
-│   ├── paint_semantic_gaussians.py  ← per-Gaussian semantic tinting
-│   ├── lift_semantics_3d.py    ← 2D masks → 3D bounding boxes
-│   ├── compute_confidence.py   ← confidence map (novel contribution)
-│   ├── complete_dead_zones.py  ← LaMa inpainting of dead zones
-│   ├── build_scene_graph.py    ← spatial relations graph
-│   ├── query_scene.py          ← Claude API query interface
-│   ├── prune_floaters.py       ← opacity + density pruning
-│   ├── realign_splat_v4.py     ← Z-up → Y-up alignment
-│   ├── gen_highlight_splats.py ← per-object highlight splats
-│   └── convert_to_splat.py     ← PLY → .splat converter
+│   ├── extract_frames.py           ← video → blur-filtered frames
+│   ├── run_mast3r_slam.py          ← MASt3R-SLAM dense reconstruction
+│   ├── colmap_utils.py             ← COLMAP binary reader/writer (pycolmap-free)
+│   ├── train_splat.py              ← nerfstudio splatfacto wrapper
+│   ├── run_semantic.py             ← Grounded SAM2 per-frame masks
+│   ├── paint_semantic_pointcloud.py← per-Gaussian semantic labels + centroid export
+│   ├── interpolate_slam_poses.py   ← SLERP: 101 keyframes → 1282 dense poses
+│   ├── lift_semantics_3d.py        ← 2D masks → 3D bounding boxes
+│   ├── compute_confidence.py       ← confidence map  ★ novel contribution
+│   ├── complete_dead_zones.py      ← LaMa dead-zone inpainting
+│   ├── build_scene_graph.py        ← spatial relation graph
+│   └── query_scene.py              ← Claude API language interface
+│
 ├── ucl_gpu/
-│   ├── run_splat_v4.sh         ← full splatting job (RTX 4070 Ti)
-│   ├── run_semantic_job.sh     ← semantic segmentation job
-│   └── run_vggt_job.sh         ← VGGT reconstruction job
+│   ├── run_splat_job.sh            ← nerfstudio job (RTX 4070 Ti SUPER)
+│   ├── run_semantic_job.sh         ← Grounded SAM2 job
+│   └── run_vggt_job.sh             ← VGGT pose estimation job
+│
 ├── outputs/
-│   ├── objects_3d_yup.json     ← object metadata (centroids, confidence)
-│   └── scene_graph.json        ← spatial relations graph
-├── open_viewer.py              ← local dev server (port 8080)
-├── config.yaml                 ← paths and hyperparameters
+│   ├── scene_pointcloud_web.ply    ← 2.5M pts, viewer-ready (Y-down, 38MB)
+│   ├── semantic_centroids.json     ← 7 object centroids in MASt3R world space
+│   ├── confidence_map.npy          ← 90×86×118 voxel grid (float32)
+│   ├── navigability_map.png        ← bird's-eye confidence visualisation
+│   └── scene_graph.json            ← spatial relations + object metadata
+│
+├── open_viewer.py                  ← local dev server  (port 8080)
+├── config.yaml
 └── requirements.txt
 ```
 
@@ -191,37 +291,41 @@ python scripts/build_scene_graph.py
 
 ## Design Choices
 
-**VGGT over pure COLMAP** — VGGT (CVPR 2025 Best Paper) runs a single forward pass to produce camera poses and depth maps simultaneously. For a 641-frame video this is significantly faster than COLMAP's iterative bundle adjustment, and produces depth priors that guide the Gaussian initialisation.
+**MASt3R-SLAM over COLMAP for reconstruction** — COLMAP's incremental bundle adjustment loses track on the fast-panning sections of the video. MASt3R-SLAM runs a feed-forward pass over all 1282 frames and produces a globally consistent 14.9M-point cloud without frame rejection.
 
-**nerfstudio splatfacto over FlashGS / raw gsplat** — FlashGS requires NVIDIA-specific CUDA extensions that don't compile on Apple Silicon. nerfstudio's splatfacto wraps gsplat cleanly, supports standard COLMAP input, and gives a well-tuned training loop out of the box.
+**Custom COLMAP writer over pycolmap** — pycolmap 4.0 broke the `Image` constructor API on Python 3.11+. A 200-line custom binary writer (`colmap_utils.py`) removes the dependency entirely and writes identical `.bin` files.
 
-**Grounded SAM2 (open-vocab) over fixed-class segmentation** — Mirrors the VLM-based perception used in KinetIQ. Any object label can be queried at inference time without retraining; confidence scores are propagated through to the scene graph.
+**Per-voxel confidence over per-Gaussian opacity** — Gaussian opacity encodes visual appearance, not observability. The confidence map uses the independent signal of camera ray density to answer "was this region actually seen?" — which opacity cannot.
 
-**Confidence map as novel contribution** — No published student project addresses the *quality* of 3D reconstruction from the robot's perspective. The confidence map is cheap to compute (voxel grid + camera rays, ~2 min on CPU), interpretable (three-class tagging), and directly useful for downstream planning.
+**Scipy quaternion decoding over colmap_utils** — `qvec_to_rotmat()` in the COLMAP reader has a silent `.T` transposition bug (returns R_c2w instead of R_w2c). Using `scipy.spatial.transform.Rotation.from_quat([q[1],q[2],q[3],q[0]])` bypasses the convention ambiguity entirely.
 
-**Static HF Space + Dataset CDN** — Keeps the demo permanently accessible without a running server. The 50MB splat is served from HF's CDN with permissive CORS headers, so the viewer fetches it directly in the browser with no proxy.
+**Single-file viewer** — `index.html` has zero build dependencies. Three.js and PLYLoader are loaded from CDN. The entire viewer ships as one file, making local serving trivial (`python open_viewer.py`) and future static deployment straightforward.
 
 ---
 
 ## Limitations
 
-- Wall regions have low confidence (65.6% inferred) because the camera path didn't cover corners
-- Semantic labelling works best for objects seen in >30 frames; rarely-seen objects get `inferred` tags
-- The viewer requires WebGL 2.0 — works in Chrome/Firefox/Safari but not all embedded browsers
-- Dead zone inpainting is 2D only; back-projecting inpainted pixels into new Gaussians is future work
+- **Wall coverage**: 65.6% of voxels are `inferred` — the camera path didn't cover room corners or the ceiling
+- **Sparse Gaussians**: Only 101 SLAM keyframes were selected for splatting training; more keyframes would improve density
+- **Label accuracy**: Objects seen in fewer than ~30 frames may get wrong or missing labels
+- **Dead zones are 2D**: LaMa inpainting completes the appearance of dead zones but does not add new Gaussians to the 3D scene — back-projection is future work
+- **WebGL only**: The viewer requires WebGL 2.0; not compatible with some embedded/mobile browsers
 
 ---
 
 ## Future Work
 
-- Multi-visit change detection: diff two scene graphs to detect moved objects
-- Back-projection of inpainted dead zones into new Gaussians
-- Real-time confidence update as a robot navigates and adds new viewpoints
-- Integration with a robot arm planner using the scene graph as a world model
+- **Deployment**: Upload point cloud and splat to Hugging Face Dataset; serve viewer as a static HF Space
+- **splat_v7**: SLERP-interpolate 101 SLAM keyframes to 1282 dense training views — expected to reduce wall ghosting
+- **Multi-visit change detection**: Diff two scene graphs across sessions to track moved objects
+- **Back-projection**: Insert inpainted pixels as new Gaussians in dead zones
+- **Live confidence update**: Stream new viewpoints from a robot camera; update the confidence map in real time
 
 ---
 
 ## Author
 
-**Jeson Ramesh Selvakumar** — UCL MEng Robotics & AI, Year 2  
-Built as part of the [Humanoid](https://thehumanoid.ai) internship challenge, May 2026.
+**Jeson Ramesh Selvakumar**  
+UCL MEng Robotics & AI, Year 2  
+Built for the [Humanoid](https://thehumanoid.ai) internship challenge · May 2026  
+[github.com/JesonRamesh](https://github.com/JesonRamesh)
