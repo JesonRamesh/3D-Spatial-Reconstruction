@@ -70,6 +70,14 @@
       );
     }
 
+    /* ── Montage fade overlay ───────────────────────────────────── */
+    #montage-fade {
+      position:fixed; inset:0; z-index:2;
+      background:#03030a;
+      opacity:0; pointer-events:none;
+      transition:opacity 0.38s ease;
+    }
+
     /* ── Onboarding overlay ──────────────────────────────────── */
     #onboarding {
       position:fixed; inset:0; z-index:800;
@@ -350,6 +358,7 @@
 
 <!-- Aurora background blobs -->
 <div id="aurora"><div class="a3"></div><div class="a4"></div></div>
+<div id="montage-fade"></div>
 
 <!-- Top bar -->
 <div id="topbar">
@@ -525,6 +534,105 @@ let pcRenderer = null, pcScene = null, pcCamera = null, pcControls = null, pcDom
 let pcStartPos  = null;
 let pcStartLook = null;
 
+// ── Cinematic montage ──────────────────────────────────────────────────────────
+const MONTAGE_SHOTS = [
+  { type: 'spin', duration: 10000 },
+  { type: 'fly', duration: 6500,
+    from: { pos: [-0.102, -0.170,  0.443], look: [ 0.460,  0.480, 2.984] },
+    to:   { pos: [-1.737, -0.170,  0.804], look: [-1.176,  0.480, 3.346] } },
+  { type: 'fly', duration: 6500,
+    from: { pos: [-0.417, -0.402, -0.072], look: [ 0.469,  0.291, 0.735] },
+    to:   { pos: [-0.127, -0.664,  1.541], look: [ 0.469,  0.291, 0.735] } },
+  { type: 'fly', duration: 6500,
+    from: { pos: [ 0.049,  0.157,  0.882], look: [ 0.576,  0.290, 0.969] },
+    to:   { pos: [ 0.275, -0.007,  0.072], look: [ 0.689,  0.290, 0.278] } },
+  { type: 'fly', duration: 6500,
+    from: { pos: [ 0.006, -0.462,  0.722], look: [-1.119, -0.068, 0.852] },
+    to:   { pos: [-0.956, -0.126,  0.833], look: [-2.081,  0.268, 0.963] } },
+  { type: 'fly', duration: 6500,
+    from: { pos: [-1.437, -0.281,  0.147], look: [-2.081,  0.268, 0.963] },
+    to:   { pos: [-1.545, -0.681,  1.405], look: [-2.081,  0.268, 0.963] } },
+];
+
+let montageActive       = false;
+let montageIdx          = 0;
+let montageInactivityTimer = null;
+let spinShot            = null; // active spin state: { cx,cy,cz,rXZ,baseAngle,startTime,duration,onDone }
+
+function setFade(opacity, onDone) {
+  const el = document.getElementById('montage-fade');
+  if (!el) { onDone?.(); return; }
+  el.style.opacity = opacity;
+  if (onDone) setTimeout(onDone, 400);
+}
+
+function tickSpinShot() {
+  if (!spinShot || !pcCamera) return;
+  const t = Math.min((performance.now() - spinShot.startTime) / spinShot.duration, 1);
+  const e = easeIO(t);
+  const a = spinShot.baseAngle + Math.PI * 2 * e;
+  pcCamera.position.set(
+    spinShot.cx + spinShot.rXZ * Math.sin(a), PC_HOME_POS[1],
+    spinShot.cz + spinShot.rXZ * Math.cos(a),
+  );
+  pcCamera.lookAt(spinShot.cx, spinShot.cy, spinShot.cz);
+  if (pcControls) pcControls.target.set(spinShot.cx, spinShot.cy, spinShot.cz);
+  if (t >= 1) { const cb = spinShot.onDone; spinShot = null; cb?.(); }
+}
+
+function runMontageShot(idx) {
+  if (!montageActive) return;
+  const shot = MONTAGE_SHOTS[idx % MONTAGE_SHOTS.length];
+  if (shot.type === 'spin') {
+    pcCamera.position.set(...PC_HOME_POS);
+    if (pcControls) { pcControls.target.set(...PC_HOME_LOOK); pcControls.enabled = false; pcControls.update(); }
+    const cx = PC_HOME_LOOK[0], cy = PC_HOME_LOOK[1], cz = PC_HOME_LOOK[2];
+    const dx = PC_HOME_POS[0] - cx, dz = PC_HOME_POS[2] - cz;
+    spinShot = {
+      cx, cy, cz, rXZ: Math.sqrt(dx*dx + dz*dz),
+      baseAngle: Math.atan2(dx, dz),
+      startTime: performance.now(), duration: shot.duration,
+      onDone: () => { if (pcControls) pcControls.enabled = true; nextMontageShot(); },
+    };
+  } else {
+    pcCamera.position.set(...shot.from.pos);
+    if (pcControls) { pcControls.target.set(...shot.from.look); pcControls.enabled = false; pcControls.update(); }
+    pcCamera.lookAt(...shot.from.look);
+    flyTo(shot.to.pos, shot.to.look, shot.duration, () => {
+      if (pcControls) pcControls.enabled = true;
+      nextMontageShot();
+    });
+  }
+}
+
+function nextMontageShot() {
+  if (!montageActive) return;
+  montageIdx = (montageIdx + 1) % MONTAGE_SHOTS.length;
+  runMontageShot(montageIdx);
+}
+
+function startMontage() {
+  if (montageActive || touring) return;
+  montageActive = true;
+  runMontageShot(montageIdx);
+}
+
+function stopMontage() {
+  if (!montageActive) return;
+  montageActive = false;
+  spinShot = null;
+  anim = null;
+  setFade(0);
+  if (pcControls) { pcControls.enabled = true; pcControls.update(); }
+}
+
+function resetInactivityTimer() {
+  if (touring) return; // never start montage while tour is running
+  clearTimeout(montageInactivityTimer);
+  if (montageActive) stopMontage();
+  montageInactivityTimer = setTimeout(startMontage, 60000);
+}
+
 async function bestPcUrl() {
   for (const url of PC_CANDIDATES) {
     try { const r = await fetch(url, { method:'HEAD' }); if (r.ok) return url; } catch(_) {}
@@ -544,7 +652,8 @@ async function initPointCloud() {
     }
     (function loop(){
       if (viewMode !== 'pointcloud') return;
-      tickPcMovement();
+      if (montageActive && spinShot) { tickSpinShot(); }
+      else if (!montageActive) { tickPcMovement(); pcControls.update(); }
       updateLabelSizes();
       // Flow stars toward the viewer (Z direction)
       for (const name of ['bgStars', 'fgStars']) {
@@ -560,7 +669,6 @@ async function initPointCloud() {
         }
         pos.needsUpdate = true;
       }
-      pcControls.update();
       pcRenderer.render(pcScene, pcCamera);
       requestAnimationFrame(loop);
     })();
@@ -692,9 +800,15 @@ async function initPointCloud() {
 
       loadPcLabels();
       setProgress(90, 'Point cloud ready');
+      // Any interaction stops montage, resets 10s inactivity timer
+      canvas.addEventListener('mousedown', resetInactivityTimer);
+      canvas.addEventListener('touchstart', resetInactivityTimer, { passive: true });
+      canvas.addEventListener('wheel', resetInactivityTimer, { passive: true });
+
       ;(function loop(){
         if (viewMode !== 'pointcloud') return;
-        tickPcMovement();
+        if (montageActive && spinShot) { tickSpinShot(); }
+        else if (!montageActive) { tickPcMovement(); pcControls.update(); }
         updateLabelSizes();
         for (const name of ['bgStars', 'fgStars']) {
           const pts = pcScene.getObjectByName(name);
@@ -709,13 +823,15 @@ async function initPointCloud() {
           }
           pos.needsUpdate = true;
         }
-        pcControls.update();
         pcRenderer.render(pcScene, pcCamera);
         requestAnimationFrame(loop);
       })();
-      // Start intro fly-in after a brief pause (let loading screen fade out first)
+      // Start intro fly-in, then begin cinematic montage
       setTimeout(() => {
-        flyTo(PC_HOME_POS, PC_HOME_LOOK, 5500, () => { pcControls.enabled = true; });
+        flyTo(PC_HOME_POS, PC_HOME_LOOK, 5500, () => {
+          pcControls.enabled = true;
+          startMontage();
+        });
       }, 600);
 
       resolve();
@@ -737,6 +853,9 @@ document.addEventListener('keydown', e => {
     pcKeys[e.code] = true;
     // Prevent arrow keys from scrolling the sidebar
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+    // Any movement key stops montage, resets inactivity timer
+    if (['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE',
+         'ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) resetInactivityTimer();
   }
 });
 document.addEventListener('keyup', e => { delete pcKeys[e.code]; });
@@ -968,12 +1087,13 @@ const ROOM_VIEW_POS = [0.261, -0.553, 0.60];
 // Camera positions: 0.72 m from centroid along the HOME_POS approach direction.
 // Exact camera positions captured manually from the viewer for each confirmed object.
 // All other detections (monitor, desk, door, window, lamp) were false positives and excluded.
+// All positions in PC (MASt3R world) space — used with flyTo() directly
 const TOUR_STOPS = {
-  bed:    { pos:[-0.067, -0.415, -0.053], look:[ 0.105, -0.412, -0.163] },
-  laptop: { pos:[ 0.587, -0.342, -0.057], look:[ 0.765, -0.341,  0.290] },
-  fan:    { pos:[ 0.626, -0.386,  0.020], look:[ 0.929, -0.341,  0.261] },
-  shelf:  { pos:[ 0.378, -0.308, -0.183], look:[ 0.204, -0.412, -0.306] },
-  chair:  { pos:[ 0.596, -0.360, -0.555], look:[ 0.608, -0.412, -0.323] },
+  bed:    { pos:[-0.711,  0.244,  0.545], look:[-0.664,  0.241,  0.747] },
+  laptop: { pos:[ 0.176, -0.218,  0.711], look:[ 0.227, -0.179,  0.717] },
+  fan:    { pos:[ 0.281, -0.102,  1.126], look:[ 0.477,  0.049,  1.148] },
+  shelf:  { pos:[-0.293,  0.124,  0.941], look:[-0.813,  0.303,  0.932] },
+  chair:  { pos:[-0.582,  0.189,  1.374], look:[-0.412,  0.241,  1.230] },
 };
 
 function viewPosFor(name) {
@@ -994,7 +1114,7 @@ function selectObj(name) {
 
   // Always fly to the tour stop if one exists — independent of the JSON metadata
   const vp = viewPosFor(name);
-  if (vp) flyToSplatSpace(vp.pos, vp.look, 1600);
+  if (vp) flyTo(vp.pos, vp.look, 1600);
 
   // Show info card if metadata is available; otherwise show minimal card
   const obj = objects[name];
@@ -1043,6 +1163,8 @@ function tourNames() {
 }
 
 function startTour() {
+  stopMontage();
+  clearTimeout(montageInactivityTimer); // no montage during tour
   touring = true; tourIdx = 0;
   const btn = document.getElementById('tour-btn');
   btn.textContent = '■ Stop'; btn.classList.add('touring');
@@ -1055,6 +1177,7 @@ function stopTour() {
   const btn = document.getElementById('tour-btn');
   btn.textContent = '▶ Tour'; btn.classList.remove('touring');
   tourDots.classList.add('hidden');
+  resetInactivityTimer(); // restart 60s countdown after tour ends
 }
 
 function nextTourStep() {
@@ -1070,7 +1193,7 @@ function nextTourStep() {
   if (objects[name]) showInfo(name, objects[name]);
   // Fly camera to the object-specific position
   const vp = viewPosFor(name);
-  if (vp) flyToSplatSpace(vp.pos, vp.look, 1600);
+  if (vp) flyTo(vp.pos, vp.look, 1600);
   // Update tour dots
   document.querySelectorAll('.tdot').forEach((d, i) =>
     d.classList.toggle('on', i === tourIdx));
