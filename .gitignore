@@ -15,8 +15,9 @@
 *.npy
 
 # ── Extracted frames (regenerable from video) ────────────────────
-data/frames/*.jpg
-data/frames/*.png
+data/frames/
+data/frames_v3/
+data/frames_v2/
 
 # ── Intermediate data directories ────────────────────────────────
 data/raw_images/
@@ -25,6 +26,7 @@ data/colmap_v4/
 data/colmap_video/
 data/vggt_out_v2/
 data/mast3r_out/
+data/mast3r_out_v2/
 data/depth/
 data/vggt_out/sparse/
 data/vggt_out/images/
@@ -32,14 +34,20 @@ data/vggt_out/images/
 # ── Generated outputs (regenerable) ──────────────────────────────
 outputs/splat/
 outputs/splat_v4/
+outputs/splat_v5/
 outputs/splat_mast3r/
 outputs/splat_mast3r_v2/
+outputs/mast3r_out_v2/
 outputs/semantic/
 outputs/semantic_v2/
 outputs/semantic_v3/
+outputs/semantic_mast3r/
 outputs/dead_zones/
 outputs/debug/
 outputs/highlights/
+outputs/pointcloud_stats.json
+outputs/pointcloud_topdown.png
+outputs/semantic_stats.json
 
 # ── Model weights ────────────────────────────────────────────────
 models/

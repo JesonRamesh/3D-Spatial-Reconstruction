@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="app/assets/banner.png" alt="RoboScene+" width="100%"/>
-</p>
-
 <h1 align="center">RoboScene+</h1>
 
 <p align="center">
