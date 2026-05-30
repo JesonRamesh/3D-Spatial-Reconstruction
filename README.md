@@ -13,29 +13,10 @@
   <a href="https://github.com/JesonRamesh/3D-Spatial-Reconstruction/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square" alt="MIT License"/></a>
 </p>
 
-&nbsp;
-
-## Evidence
-
 <p align="center">
   <img src="app/assets/viewer_screenshot.png" alt="Dense point cloud with floating semantic labels" width="90%"/>
   <br/><em>Interactive viewer — dense 2.5M-point RGB cloud, floating 3D semantic labels, cinematic auto-tour</em>
 </p>
-
-<table>
-  <tr>
-    <td align="center">
-      <img src="outputs/navigability_map.png" alt="Top-down reconstruction map with object centroids" width="100%"/>
-      <br/><sub>Top-down RGB projection of 2.5M-point cloud · coloured dots = object centroids</sub>
-    </td>
-    <td align="center">
-      <img src="app/assets/viewer_tour.png" alt="Guided tour UI with animated progress dots and sidebar" width="100%"/>
-      <br/><sub>Guided tour — 5 stops, animated progress dots, collapsible sidebar with confidence badges</sub>
-    </td>
-  </tr>
-</table>
-
-&nbsp;
 
 ## Overview
 
@@ -543,7 +524,7 @@ In rough order of impact:
 
 ## Author
 
-**Jeson Ramesh Selvakumar**
-UCL MEng Robotics & AI, Year 2
-Built for the [Humanoid](https://thehumanoid.ai) internship challenge · May 2026
+**Jeson Ramesh Selvakumar**<br/>
+UCL MEng Robotics & AI, Year 2<br/>
+Built for the [Humanoid](https://thehumanoid.ai) internship challenge · May 2026<br/>
 [github.com/JesonRamesh](https://github.com/JesonRamesh)
