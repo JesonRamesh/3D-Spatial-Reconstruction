@@ -17,36 +17,20 @@
 
 ## Evidence
 
-<table>
-  <tr>
-    <td align="center">
-
-<!-- Upload a screen-recording of the viewer to a GitHub Issue on this repo by dragging
-     the video file into the comment box. GitHub will generate a URL like:
-     https://github.com/user-attachments/assets/<uuid>
-     Paste that URL here (no markdown syntax, just the raw URL on its own line). -->
-VIEWER_DEMO_VIDEO_URL_HERE
-
-<sub>Interactive 3D viewer — cinematic auto-tour, WASD navigation, semantic labels</sub>
-    </td>
-    <td align="center">
-
-TOUR_WALKTHROUGH_VIDEO_URL_HERE
-
-<sub>Guided tour through all detected objects</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="app/assets/viewer_screenshot.png" alt="Dense point cloud with floating semantic labels" width="90%"/>
+  <br/><em>Interactive viewer — dense 2.5M-point RGB cloud, floating 3D semantic labels, cinematic auto-tour</em>
+</p>
 
 <table>
   <tr>
-    <td align="center">
-      <img src="app/assets/viewer_screenshot.png" alt="Dense point cloud with floating semantic labels" width="100%"/>
-      <br/><sub>Dense 2.5M-point RGB cloud with constant screen-size 3D labels</sub>
-    </td>
     <td align="center">
       <img src="outputs/navigability_map.png" alt="Top-down reconstruction map with object centroids" width="100%"/>
-      <br/><sub>Top-down projection — real RGB colours from point cloud, object centroid overlays</sub>
+      <br/><sub>Top-down RGB projection of 2.5M-point cloud · coloured dots = object centroids</sub>
+    </td>
+    <td align="center">
+      <img src="app/assets/viewer_tour.png" alt="Guided tour UI with animated progress dots and sidebar" width="100%"/>
+      <br/><sub>Guided tour — 5 stops, animated progress dots, collapsible sidebar with confidence badges</sub>
     </td>
   </tr>
 </table>
@@ -123,8 +107,8 @@ flowchart LR
     sam2 --> semantic["semantic_centroids.json\n7 object positions"]
     cloud --> confidence["Confidence Map\n0.6×density + 0.4×coverage"]
     confidence --> confmap["confidence_map.npy\n154×160×152 voxels"]
-    semantic --> graph["Scene Graph\n10 nodes · 91 edges"]
-    graph --> claude["Claude API\nSpatial Queries"]
+    semantic --> sgraph["Scene Graph\n10 nodes · 91 edges"]
+    sgraph --> claude["Claude API\nSpatial Queries"]
     webply --> viewer["Three.js Viewer\napp/static/index.html"]
     confmap --> viewer
     semantic --> viewer
