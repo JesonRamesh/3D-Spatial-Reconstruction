@@ -235,11 +235,19 @@ class Parser:
             camtoworlds = transform_cameras(T1, camtoworlds)
             points = transform_points(T1, points)
 
-            T2 = align_principle_axes(points)
-            camtoworlds = transform_cameras(T2, camtoworlds)
-            points = transform_points(T2, points)
-
-            transform = T2 @ T1
+            # align_principle_axes can fail with degenerate point clouds
+            # (e.g. very few points or coplanar points from SLAM)
+            try:
+                if len(points) > 10:
+                    T2 = align_principle_axes(points)
+                    camtoworlds = transform_cameras(T2, camtoworlds)
+                    points = transform_points(T2, points)
+                    transform = T2 @ T1
+                else:
+                    transform = T1
+            except np.linalg.LinAlgError:
+                print("[Parser] Warning: align_principle_axes failed (degenerate points). Skipping.")
+                transform = T1
         else:
             transform = np.eye(4)
 

@@ -140,11 +140,14 @@ def ensure_gsplat_trainer(project_root: Path, logger: logging.Logger) -> Path:
 
 def validate_colmap_dir(colmap_dir: Path, logger: logging.Logger) -> bool:
     """Check that the COLMAP sparse directory has required files."""
-    sparse_dir = colmap_dir / "sparse"
+    # Check both sparse/ and sparse/0/ (COLMAP convention)
+    sparse_dir = colmap_dir / "sparse" / "0"
+    if not sparse_dir.exists():
+        sparse_dir = colmap_dir / "sparse"
     required_files = ["cameras.bin", "images.bin", "points3D.bin"]
 
     if not sparse_dir.exists():
-        logger.error(f"Sparse directory not found: {sparse_dir}")
+        logger.error(f"Sparse directory not found: {colmap_dir / 'sparse'}")
         logger.error("Run VGGT first (Session 2) to generate COLMAP output.")
         return False
 
@@ -239,7 +242,7 @@ def run_gsplat_training(
         "--data_dir", str(colmap_dir),
         "--result_dir", str(output_dir),
         "--max_steps", str(iterations),
-        "--data_factor", "1",
+        "--data_factor", "1",\
         # gsplat v1.3.0 uses tyro: prune_opa lives under strategy (DefaultStrategy)
         "--strategy.prune-opa", str(prune_opa),
         # Only eval+save at final step (avoids imageio video render crash mid-training)
