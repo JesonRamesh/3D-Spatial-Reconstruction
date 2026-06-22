@@ -107,7 +107,10 @@ def main() -> None:
     num_keyframes = min(args.num_keyframes, train_cameras.size)
     keyframe_indices = np.linspace(0, train_cameras.size - 1, num_keyframes)
     keyframe_indices = keyframe_indices.round().astype(np.int64)
-    keyframe_cameras = train_cameras[keyframe_indices]
+    # Cameras.__getitem__ (TensorDataclass) requires a torch.Tensor for
+    # fancy/advanced indexing -- a plain numpy array falls through to its
+    # tuple-only path and fails an assert.
+    keyframe_cameras = train_cameras[torch.from_numpy(keyframe_indices)]
 
     steps_per_segment = max(1, round(args.num_frames / (num_keyframes - 1)))
     total_frames = (num_keyframes - 1) * steps_per_segment
