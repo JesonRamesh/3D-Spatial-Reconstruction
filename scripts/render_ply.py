@@ -42,6 +42,7 @@ Usage (smoke test first):
 
 import argparse
 import struct
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -49,6 +50,10 @@ import torch
 from PIL import Image
 
 from gsplat import rasterization
+
+# render_ply.py lives in scripts/, so colmap_utils is importable directly.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import colmap_utils  # noqa: E402  (read_cameras_binary / read_images_binary / qvec_to_rotmat)
 
 SH_C0 = 0.28209479177387814  # 0-th order SH basis constant
 
@@ -160,6 +165,97 @@ def build_orbit_path(means, num_frames, up_axis, arc_deg, radius_scale,
     return np.stack(viewmats, axis=0), centroid, extent
 
 
+# ── Camera path from the splat's actual COLMAP training poses ──────────────
+
+def _quat_slerp(q0, q1, t):
+    """Spherical linear interpolation between two unit quaternions (w,x,y,z)."""
+    q0 = q0 / np.linalg.norm(q0)
+    q1 = q1 / np.linalg.norm(q1)
+    dot = np.dot(q0, q1)
+    if dot < 0.0:  # take the shorter arc
+        q1 = -q1
+        dot = -dot
+    if dot > 0.9995:  # nearly identical -> linear
+        q = q0 + t * (q1 - q0)
+        return q / np.linalg.norm(q)
+    theta = np.arccos(np.clip(dot, -1.0, 1.0))
+    s0 = np.sin((1 - t) * theta) / np.sin(theta)
+    s1 = np.sin(t * theta) / np.sin(theta)
+    return s0 * q0 + s1 * q1
+
+
+def build_colmap_path(colmap_dir, num_frames, smoke):
+    """
+    Build viewmats + intrinsics from the splat's real COLMAP training poses.
+
+    COLMAP stores world-to-camera (qvec, tvec) in OpenCV convention -- exactly
+    what gsplat's viewmats expect -- so no frame conversion is needed IF the
+    exported .ply is in the COLMAP world frame (which ns-export gaussian-splat
+    produces). Rendering from real observed views also avoids the novel-view
+    distortion a synthetic orbit suffers.
+    """
+    cams = colmap_utils.read_cameras_binary(colmap_dir / "cameras.bin")
+    imgs = colmap_utils.read_images_binary(colmap_dir / "images.bin")
+
+    # Sort poses by image name for a coherent trajectory through the capture
+    ordered = sorted(imgs.values(), key=lambda im: im["name"])
+    poses = []  # (position, qvec) per real keyframe
+    for im in ordered:
+        R = colmap_utils.qvec_to_rotmat(im["qvec"])  # world->cam
+        t = im["tvec"]
+        cam_pos = -R.T @ t  # camera centre in world coords
+        poses.append((cam_pos, im["qvec"], R, t))
+
+    # Intrinsics/resolution from the first camera (single-camera phone capture)
+    cam0 = cams[ordered[0]["camera_id"]]
+    fx, fy, cx, cy = _intrinsics_from_params(cam0)
+    width, height = cam0["width"], cam0["height"]
+    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+
+    if smoke:
+        # Render a few of the REAL views as-is: the cleanest possible alignment
+        # check (no interpolation that could itself look off).
+        idx = np.linspace(0, len(poses) - 1, num_frames).round().astype(int)
+        viewmats = []
+        for i in idx:
+            _, _, R, t = poses[i]
+            vm = np.eye(4)
+            vm[:3, :3] = R
+            vm[:3, 3] = t
+            viewmats.append(vm)
+        return np.stack(viewmats), K, width, height
+
+    # Full render: interpolate between consecutive real keyframes for smoothness
+    n_seg = len(poses) - 1
+    steps = max(1, round(num_frames / n_seg))
+    viewmats = []
+    for s in range(n_seg):
+        pos0, q0, _, _ = poses[s]
+        pos1, q1, _, _ = poses[s + 1]
+        for k in range(steps):
+            a = k / steps
+            pos = (1 - a) * pos0 + a * pos1
+            q = _quat_slerp(q0, q1, a)
+            R = colmap_utils.qvec_to_rotmat(q)
+            t = -R @ pos
+            vm = np.eye(4)
+            vm[:3, :3] = R
+            vm[:3, 3] = t
+            viewmats.append(vm)
+    return np.stack(viewmats), K, width, height
+
+
+def _intrinsics_from_params(cam):
+    """Extract (fx, fy, cx, cy) across common COLMAP camera models."""
+    model, p = cam["model"], cam["params"]
+    if model in ("PINHOLE", "OPENCV", "FULL_OPENCV"):
+        return p[0], p[1], p[2], p[3]
+    if model in ("SIMPLE_PINHOLE", "SIMPLE_RADIAL", "RADIAL"):
+        return p[0], p[0], p[1], p[2]  # shared focal
+    # Fallback: assume first param is focal, next two are principal point
+    return p[0], p[0], p[1], p[2]
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -173,8 +269,16 @@ def parse_args():
                    help="Render only --smoke_frames frames spanning the arc, to "
                         "check alignment cheaply before a full render.")
     p.add_argument("--smoke_frames", type=int, default=6)
-    p.add_argument("--width", type=int, default=1280)
-    p.add_argument("--height", type=int, default=720)
+    p.add_argument("--colmap_dir", type=Path, default=None,
+                   help="COLMAP sparse dir (cameras.bin + images.bin). If set, "
+                        "render from the splat's REAL training poses instead of a "
+                        "synthetic orbit -- the reliable path. "
+                        "e.g. data/mast3r_out/sparse/0")
+    p.add_argument("--width", type=int, default=1280,
+                   help="Render width (ignored when --colmap_dir is set; uses "
+                        "the COLMAP camera resolution).")
+    p.add_argument("--height", type=int, default=720,
+                   help="Render height (ignored when --colmap_dir is set).")
     p.add_argument("--fov_deg", type=float, default=60.0)
     p.add_argument("--up_axis", choices=["x", "y", "z"], default="z",
                    help="World vertical axis (mast3r_v2 .ply declares z).")
@@ -220,22 +324,32 @@ def main():
         sh[:, 1:k, :] = rest[:, : k - 1, :]
     colors = torch.from_numpy(sh).to(device)
 
-    # Intrinsics from FOV
-    fov = np.deg2rad(args.fov_deg)
-    fx = fy = (args.width / 2.0) / np.tan(fov / 2.0)
-    cx, cy = args.width / 2.0, args.height / 2.0
-    K = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]],
-                     dtype=torch.float32, device=device)
-
     num_frames = args.smoke_frames if args.smoke else args.num_frames
-    viewmats_np, centroid, extent = build_orbit_path(
-        means_np, num_frames, args.up_axis, args.arc_deg,
-        args.radius_scale, args.elevation_scale,
-    )
-    print(f"Scene centroid={np.round(centroid,3)} diagonal={extent:.3f}m")
+
+    if args.colmap_dir is not None:
+        # Reliable path: render from the splat's real training poses.
+        viewmats_np, K_np, width, height = build_colmap_path(
+            args.colmap_dir, num_frames, args.smoke)
+        num_frames = viewmats_np.shape[0]  # interpolation may adjust the total
+        K = torch.tensor(K_np, dtype=torch.float32, device=device)
+        print(f"Using {num_frames} poses from COLMAP {args.colmap_dir} "
+              f"at {width}x{height}")
+    else:
+        # Fallback: synthetic orbit derived from the splat's own geometry.
+        width, height = args.width, args.height
+        fov = np.deg2rad(args.fov_deg)
+        fx = fy = (width / 2.0) / np.tan(fov / 2.0)
+        cx, cy = width / 2.0, height / 2.0
+        K = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]],
+                         dtype=torch.float32, device=device)
+        viewmats_np, centroid, extent = build_orbit_path(
+            means_np, num_frames, args.up_axis, args.arc_deg,
+            args.radius_scale, args.elevation_scale,
+        )
+        print(f"Scene centroid={np.round(centroid,3)} diagonal={extent:.3f}m")
+
     print(f"Rendering {num_frames} frames "
-          f"({'SMOKE TEST' if args.smoke else 'full'}), "
-          f"SH degree {args.sh_degree}, arc {args.arc_deg}deg ...")
+          f"({'SMOKE TEST' if args.smoke else 'full'}), SH degree {args.sh_degree} ...")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     viewmats = torch.from_numpy(viewmats_np.astype(np.float32)).to(device)
@@ -250,8 +364,8 @@ def main():
                 colors=colors,
                 viewmats=viewmats[i : i + 1],
                 Ks=K[None],
-                width=args.width,
-                height=args.height,
+                width=width,
+                height=height,
                 sh_degree=args.sh_degree,
                 render_mode="RGB",
             )
@@ -265,7 +379,7 @@ def main():
     print(f"Done. {num_frames} frames in {args.output_dir}/")
     if args.smoke:
         print("Smoke test complete -- eyeball these, then rerun without --smoke "
-              "(adjust --up_axis/--radius_scale/--arc_deg if the orbit is off).")
+              "for the full smooth render.")
 
 
 if __name__ == "__main__":
