@@ -71,6 +71,12 @@ def parse_args() -> argparse.Namespace:
         default=120,
         help="Number of frames to render along the interpolated path (100-150 recommended).",
     )
+    parser.add_argument(
+        "--num_keyframes",
+        type=int,
+        default=13,
+        help="Number of evenly-spaced training-camera keyframes to interpolate between.",
+    )
     return parser.parse_args()
 
 
@@ -92,10 +98,26 @@ def main() -> None:
     train_cameras = pipeline.datamanager.train_dataparser_outputs.cameras
     print(f"Loaded {train_cameras.size} training camera poses.")
 
-    print(f"Interpolating a {args.num_frames}-frame fly-through path ...")
+    # get_interpolated_camera_path's `steps` is interpolated frames PER
+    # TRANSITION between consecutive cameras in the input set -- not a total
+    # frame count. Interpolating across all training cameras directly would
+    # yield (train_cameras.size - 1) * steps frames. Subsample to a small set
+    # of evenly-spaced keyframes first, then pick steps-per-segment so the
+    # total lands on args.num_frames.
+    num_keyframes = min(args.num_keyframes, train_cameras.size)
+    keyframe_indices = np.linspace(0, train_cameras.size - 1, num_keyframes)
+    keyframe_indices = keyframe_indices.round().astype(np.int64)
+    keyframe_cameras = train_cameras[keyframe_indices]
+
+    steps_per_segment = max(1, round(args.num_frames / (num_keyframes - 1)))
+    total_frames = (num_keyframes - 1) * steps_per_segment
+    print(
+        f"Interpolating {steps_per_segment} steps across {num_keyframes} "
+        f"keyframes -> {total_frames} total frames ..."
+    )
     render_cameras = get_interpolated_camera_path(
-        cameras=train_cameras,
-        steps=args.num_frames,
+        cameras=keyframe_cameras,
+        steps=steps_per_segment,
         order_poses=False,
     )
 
