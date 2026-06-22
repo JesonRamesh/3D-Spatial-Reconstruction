@@ -184,6 +184,60 @@ def _quat_slerp(q0, q1, t):
     return s0 * q0 + s1 * q1
 
 
+def _rotate_about_axis(v, axis, angle):
+    """Rodrigues rotation of vector v about a unit axis by angle radians."""
+    axis = axis / (np.linalg.norm(axis) + 1e-9)
+    c, s = np.cos(angle), np.sin(angle)
+    return (v * c
+            + np.cross(axis, v) * s
+            + axis * np.dot(axis, v) * (1 - c))
+
+
+def build_inside_out_path(colmap_dir, num_frames, arc_deg):
+    """
+    Sit at the room centre and rotate to look OUTWARD at the walls/furniture --
+    the natural, well-observed way to view a room splat (camera was filmed from
+    inside, panning around).
+
+    Centre AND up axis are derived from the REAL capture cameras (mean position,
+    mean up vector), so nothing about the scene orientation is guessed.
+    """
+    cams = colmap_utils.read_cameras_binary(colmap_dir / "cameras.bin")
+    imgs = colmap_utils.read_images_binary(colmap_dir / "images.bin")
+    ordered = sorted(imgs.values(), key=lambda im: im["name"])
+
+    centers, ups, forwards = [], [], []
+    for im in ordered:
+        R = colmap_utils.qvec_to_rotmat(im["qvec"])  # world->cam (OpenCV)
+        cam_pos = -R.T @ im["tvec"]
+        centers.append(cam_pos)
+        ups.append(R.T @ np.array([0.0, -1.0, 0.0]))   # cam y is down
+        forwards.append(R.T @ np.array([0.0, 0.0, 1.0]))  # cam +z is forward
+
+    center = np.mean(centers, axis=0)
+    up = np.mean(ups, axis=0)
+    up /= np.linalg.norm(up) + 1e-9
+    forward0 = np.mean(forwards, axis=0)
+    forward0 -= up * np.dot(forward0, up)  # make horizontal w.r.t. up
+    forward0 /= np.linalg.norm(forward0) + 1e-9
+
+    cam0 = cams[ordered[0]["camera_id"]]
+    fx, fy, cx, cy = _intrinsics_from_params(cam0)
+    width, height = cam0["width"], cam0["height"]
+    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+
+    arc = np.deg2rad(arc_deg)
+    # Don't duplicate the seam on a full 360 sweep
+    endpoint = abs(arc_deg) < 359.0
+    angles = np.linspace(-arc / 2, arc / 2, num_frames, endpoint=endpoint)
+
+    viewmats = []
+    for a in angles:
+        look_dir = _rotate_about_axis(forward0, up, a)
+        viewmats.append(look_at_viewmat(center, center + look_dir, up))
+    return np.stack(viewmats), K, width, height
+
+
 def build_colmap_path(colmap_dir, num_frames, smoke):
     """
     Build viewmats + intrinsics from the splat's real COLMAP training poses.
@@ -274,6 +328,10 @@ def parse_args():
                         "render from the splat's REAL training poses instead of a "
                         "synthetic orbit -- the reliable path. "
                         "e.g. data/mast3r_out/sparse/0")
+    p.add_argument("--inside_out", action="store_true",
+                   help="With --colmap_dir: sit at the room centre and rotate to "
+                        "look OUTWARD (the natural room-splat view). Centre + up "
+                        "are derived from the real cameras.")
     p.add_argument("--width", type=int, default=1280,
                    help="Render width (ignored when --colmap_dir is set; uses "
                         "the COLMAP camera resolution).")
@@ -326,7 +384,14 @@ def main():
 
     num_frames = args.smoke_frames if args.smoke else args.num_frames
 
-    if args.colmap_dir is not None:
+    if args.colmap_dir is not None and args.inside_out:
+        # Sit at the room centre, rotate to look outward (natural room view).
+        viewmats_np, K_np, width, height = build_inside_out_path(
+            args.colmap_dir, num_frames, args.arc_deg)
+        K = torch.tensor(K_np, dtype=torch.float32, device=device)
+        print(f"Inside-out look-around from real-camera centre, "
+              f"{num_frames} frames, arc {args.arc_deg}deg, at {width}x{height}")
+    elif args.colmap_dir is not None:
         # Reliable path: render from the splat's real training poses.
         viewmats_np, K_np, width, height = build_colmap_path(
             args.colmap_dir, num_frames, args.smoke)
